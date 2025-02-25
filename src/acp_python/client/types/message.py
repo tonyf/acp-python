@@ -3,7 +3,6 @@ from typing import Dict, Any, TypeVar, Type
 from enum import Enum
 import json
 from .actor import Actor
-from .session import Session
 from abc import ABC
 
 

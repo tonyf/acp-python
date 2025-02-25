@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING
 from nats.aio.msg import Msg
-from acp_python.core.types import (
+from acp_python.client.types import (
     _Message,
     HandshakeRequest,
     HandshakeAccept,

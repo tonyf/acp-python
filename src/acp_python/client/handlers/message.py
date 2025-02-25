@@ -1,5 +1,5 @@
 from typing import Optional, TYPE_CHECKING
-from acp_python.core.types import (
+from acp_python.client.types import (
     _Message,
     SessionMessage,
     Message,

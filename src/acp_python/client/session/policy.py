@@ -1,7 +1,7 @@
 from typing import Protocol, Tuple, List, Optional, Dict, Any
-from acp_python.core.types import Actor
-from ..middleware import Middleware
-from ..client import AcpClient
+from acp_python.client.types import Actor
+from acp_python.client.middleware import Middleware
+from acp_python.client.client import AcpClient
 import aiohttp
 
 

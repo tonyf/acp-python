@@ -1,5 +1,5 @@
 from typing import Protocol, Tuple, List
-from acp_python.core.types import Actor
+from acp_python.client.types import Actor
 
 
 class DiscoveryPolicy(Protocol):

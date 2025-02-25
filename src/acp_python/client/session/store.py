@@ -1,5 +1,5 @@
 from typing import Protocol, Optional
-from acp_python.core.types import Session
+from acp_python.client.types import Session
 from typing import Dict
 
 

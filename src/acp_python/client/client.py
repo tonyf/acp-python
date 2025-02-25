@@ -7,7 +7,7 @@ import anyio.to_thread
 import os
 
 from nats.aio.client import Client as NatsClient
-from acp_python.core.types import (
+from .types import (
     Actor,
     MyActor,
     Session,
