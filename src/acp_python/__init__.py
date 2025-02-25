@@ -1,2 +1,4 @@
-def hello() -> str:
-    return "Hello from acp-python!"
+from . import client
+from .client import create_client
+
+__all__ = ["create_client", "client"]

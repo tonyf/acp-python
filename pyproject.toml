@@ -33,3 +33,6 @@ cli = [
 boto3 = [
     "aioboto3>=14.0.0",
 ]
+agent = [
+    "openai>=1.64.0",
+]

@@ -1,6 +1,6 @@
 import asyncio
 import nats
-from typing import AsyncGenerator, List, Callable, Any
+from typing import AsyncGenerator, List, Callable
 import inspect
 import anyio
 import anyio.to_thread
@@ -12,8 +12,8 @@ from acp_python.core.types import (
     MyActor,
     Session,
     Message,
+    SessionMessage,
 )
-import json
 from .handlers import on_handshake_msg, on_session_message
 from .middleware import Middleware
 from .session.store import SessionStore
@@ -37,6 +37,7 @@ class AcpClient:
         middleware: List of middleware components for custom behavior
         server_url: URL of the NATS server (default: "nats://acp.net:4222")
         message_decoder: Function to decode message content (default: json.loads)
+        message_encoder: Function to encode message content (default: json.dumps)
     """
 
     def __init__(
@@ -44,9 +45,8 @@ class AcpClient:
         actor_id: str,
         token: str,
         session_store: SessionStore,
-        middleware: List[Middleware],
+        middleware: List[Middleware] = [],
         server_url: str = "nats://acp.net:4222",
-        message_decoder: Callable[[bytes], Any] = json.loads,
     ):
         self.actor_id = actor_id
         self.token = token
@@ -54,29 +54,17 @@ class AcpClient:
 
         self._nc: NatsClient | None = None
         self._session_store = session_store
-        self._middleware = middleware
-        self._message_decoder = message_decoder
+        self._middleware = middleware or []
+        self._running = False
 
     async def __aenter__(self):
         """Initialize NATS connection and middleware when entering async context."""
-        self._nc = await nats.connect(self.server_url)
-        self._session_store.__aenter__()
-        for middleware in self._middleware:
-            await middleware.__aenter__()
-
-        for middleware in self._middleware:
-            await middleware.on_connect(self)
+        await self.start()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Clean up resources when exiting async context."""
-        for middleware in self._middleware:
-            await middleware.on_disconnect(self)
-
-        for middleware in self._middleware:
-            await middleware.__aexit__(exc_type, exc_val, exc_tb)
-        await self._session_store.__aexit__(exc_type, exc_val, exc_tb)
-        await self._nc.close()
+        await self.stop()
 
     ###
     ### Properties
@@ -150,6 +138,39 @@ class AcpClient:
         # create a session with the peer
         raise
 
+    async def send_message(self, session_id: str, content: bytes) -> None:
+        """
+        Send a message to a peer actor.
+
+        Args:
+            peer_id: ID of the recipient actor
+            content: Message content to send (will be encoded using the configured encoder)
+            metadata: Optional metadata to include with the message
+
+        Raises:
+            ValueError: If no active session exists with the peer
+            RuntimeError: If client is not connected
+        """
+        if self._nc is None:
+            raise RuntimeError("Client not connected to NATS server")
+
+        # Get the session for this peer
+        session = await self._session_store.get_session(
+            self.actor_id, session_id=session_id
+        )
+        if not session:
+            raise ValueError(f"No active session with id {session_id}")
+
+        # Encrypt the message & create the message object
+        session_message = SessionMessage(
+            session_id=session.id,
+            content=session.encrypt(content),
+        )
+        encoded_message = session_message.to_bytes()
+
+        # Send the message
+        await self._nc.publish(session.peer.to_dns(), encoded_message)
+
     async def messages(self) -> AsyncGenerator[Message, None]:
         """
         Yields session messages while allowing handshake messages to be handled in the background.
@@ -196,6 +217,45 @@ class AcpClient:
             message_handler: Callback function to process received messages
         """
         asyncio.run(self.listen(message_handler))
+
+    async def start(self):
+        """
+        Start the client and connect to the NATS server.
+        Use this if not using the client as a context manager.
+        """
+        if self._running:
+            return self
+
+        self._nc = await nats.connect(self.server_url)
+        await self._session_store.__aenter__()
+        for middleware in self._middleware:
+            await middleware.__aenter__()
+
+        for middleware in self._middleware:
+            await middleware.on_connect(self)
+
+        self._running = True
+        return self
+
+    async def stop(self):
+        """
+        Stop the client and disconnect from the NATS server.
+        Use this if not using the client as a context manager.
+        """
+        if not self._running:
+            return
+
+        for middleware in reversed(self._middleware):
+            await middleware.on_disconnect(self)
+
+        for middleware in reversed(self._middleware):
+            await middleware.__aexit__(None, None, None)
+        await self._session_store.__aexit__(None, None, None)
+        if self._nc:
+            await self._nc.close()
+            self._nc = None
+
+        self._running = False
 
 
 async def create_client(
@@ -253,7 +313,7 @@ async def create_client(
         middleware.append(
             SessionPolicyMiddleware(
                 CloudWhitelistPolicy(
-                    api_url=f"{base_url}/allowed-actors",
+                    api_url="https://acp.net/api/v1/allowed-actors",
                     token=token,
                 )
             )

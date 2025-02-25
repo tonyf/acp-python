@@ -3,6 +3,7 @@ from typing import Dict, Any, TypeVar, Type
 from enum import Enum
 import json
 from .actor import Actor
+from .session import Session
 from abc import ABC
 
 
@@ -14,8 +15,6 @@ class MessageType(Enum):
 
 
 class _Message(BaseModel, ABC):
-    from_: Actor
-    to_: Actor
     message_type: MessageType
 
     @classmethod
@@ -37,31 +36,29 @@ class _Message(BaseModel, ABC):
 
 
 class HandshakeRequest(_Message):
-    from_: Actor
-    to_: Actor
+    sender: Actor
+    recipient: Actor
     message_type: MessageType = MessageType.HANDSHAKE_REQUEST
     public_key: bytes
     certificate: bytes
 
 
 class HandshakeAccept(_Message):
-    from_: Actor
-    to_: Actor
+    sender: Actor
+    recipient: Actor
     message_type: MessageType = MessageType.HANDSHAKE_ACCEPT
     session_id: str
     public_key: bytes
 
 
 class HandshakeReject(_Message):
-    from_: Actor
-    to_: Actor
+    sender: Actor
+    recipient: Actor
     message_type: MessageType = MessageType.HANDSHAKE_REJECT
     reason: str
 
 
 class SessionMessage(_Message):
-    from_: Actor
-    to_: Actor
     message_type: MessageType = MessageType.SESSION_MESSAGE
     session_id: str
     content: bytes
@@ -71,6 +68,6 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class Message(BaseModel):
-    from_: Actor
-    to_: Actor
-    content: Dict[str, Any]
+    session_id: str
+    sender: Actor
+    content: bytes

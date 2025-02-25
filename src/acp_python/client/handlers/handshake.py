@@ -8,7 +8,7 @@ from acp_python.core.types import (
     HandshakeReject,
     Session,
 )
-from acp_python.core.crypto import generate_keys, compute_shared_secret
+from acp_python.client.crypto import generate_keys, compute_shared_secret
 
 if TYPE_CHECKING:
     from ..client import AcpClient
@@ -40,38 +40,52 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
     if not isinstance(request, HandshakeRequest):
         return
 
-    # check policy
+    # Collect all middleware responses for policy checks
+    allowed_responses = []
+    rejection_reasons = []
+
     for middleware in client._middleware:
         allowed, reason = await middleware.on_session_request(
-            client, client.me_as_peer, request.from_
+            client, client.me_as_peer, request.sender
         )
-        if not allowed:
-            reject = HandshakeReject(
-                from_=client.me_as_peer,
-                to_=request.from_,
-                reason=reason or "Unknown reason",
-            )
+        allowed_responses.append(allowed)
+        if not allowed and reason:
+            rejection_reasons.append(reason)
+
+    # If any middleware rejected the request, send a rejection response
+    if not all(allowed_responses):
+        # Combine all rejection reasons or use default
+        combined_reason = (
+            "; ".join(rejection_reasons) if rejection_reasons else "Unknown reason"
+        )
+        reject = HandshakeReject(
+            sender=client.me_as_peer,
+            recipient=request.sender,
+            reason=combined_reason,
+        )
         await msg.respond(reject.to_bytes())
         return
 
-    # create session
+    # Create a new session
     private_key, public_key = generate_keys()
     session = Session(
         id=str(uuid.uuid4()),
-        peer=request.from_,
+        peer=request.sender,
         shared_secret=compute_shared_secret(private_key, request.public_key),
     )
 
-    # send accept
+    # Send an accept message to the requester
     accept = HandshakeAccept(
-        from_=client.me_as_peer,
-        to_=request.from_,
+        sender=client.me_as_peer,
+        recipient=request.sender,
         session_id=session.id,
         public_key=public_key,
     )
     await msg.respond(accept.to_bytes())
 
-    # store session
-    await client._session_store.set_session(request.from_.id, session)
+    # Store the new session
+    await client._session_store.set_session(request.sender.id, session)
+
+    # Notify middleware of session creation
     for middleware in client._middleware:
-        await middleware.on_session_create(client, request.from_, session)
+        await middleware.on_session_create(client, request.sender, session)

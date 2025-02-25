@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from .actor import Actor
+from acp_python.client.crypto import encrypt_message, decrypt_message
 
 
 class Session(BaseModel):
@@ -8,7 +9,7 @@ class Session(BaseModel):
     shared_secret: bytes
 
     def decrypt(self, content: bytes) -> bytes:
-        return content
+        return decrypt_message(self.shared_secret, content)
 
     def encrypt(self, content: bytes) -> bytes:
-        return content
+        return encrypt_message(self.shared_secret, content)

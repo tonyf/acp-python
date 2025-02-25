@@ -1,4 +1,5 @@
-from typing import Protocol, Tuple, Optional
+from abc import ABC
+from typing import Tuple, Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -6,22 +7,24 @@ if TYPE_CHECKING:
     from acp_python.core.types import Session, Actor
 
 
-class Middleware(Protocol):
+class Middleware(ABC):
     """
-    Protocol defining middleware components that can intercept and modify ACP client behavior.
+    Abstract base class defining middleware components that can intercept and modify ACP client behavior.
 
     Middleware components can hook into various events in the client lifecycle like connections,
     session management, and message handling. They can also perform actions like accepting/rejecting
     sessions.
+
+    All methods have default implementations - subclasses can override only the methods they need.
     """
 
     async def __aenter__(self):
         """Called when entering an async context"""
-        ...
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Called when exiting an async context"""
-        ...
+        pass
 
     # On Callbacks
     async def on_connect(self, client: "AcpClient") -> None:
@@ -31,7 +34,7 @@ class Middleware(Protocol):
         Args:
             client: The ACP client that connected
         """
-        ...
+        pass
 
     async def on_disconnect(self, client: "AcpClient") -> None:
         """
@@ -40,10 +43,10 @@ class Middleware(Protocol):
         Args:
             client: The ACP client that disconnected
         """
-        ...
+        pass
 
     async def on_session_request(
-        self, client: "AcpClient", me: Actor, peer: Actor
+        self, client: "AcpClient", me: "Actor", peer: "Actor"
     ) -> Tuple[bool, Optional[str]]:
         """
         Called when receiving a session request from a peer.
@@ -58,9 +61,9 @@ class Middleware(Protocol):
                 - bool: True if session should be allowed, False to reject
                 - Optional[str]: Reason for rejection if session is not allowed
         """
-        ...
+        return True, None  # Default: accept all session requests
 
-    async def on_session_response(self, client: "AcpClient", peer: Actor) -> bool:
+    async def on_session_response(self, client: "AcpClient", peer: "Actor") -> bool:
         """
         Called when receiving a response to our session request.
 
@@ -71,10 +74,10 @@ class Middleware(Protocol):
         Returns:
             bool: True if session response is accepted, False otherwise
         """
-        ...
+        return True  # Default: accept all session responses
 
     async def on_session_create(
-        self, client: "AcpClient", peer: Actor, session: Session
+        self, client: "AcpClient", peer: "Actor", session: "Session"
     ) -> None:
         """
         Called when a new session is successfully created with a peer.
@@ -84,10 +87,10 @@ class Middleware(Protocol):
             peer: The actor we established a session with
             session: The newly created session
         """
-        ...
+        pass
 
     async def on_session_reject(
-        self, client: "AcpClient", peer: Actor, reason: str
+        self, client: "AcpClient", peer: "Actor", reason: str
     ) -> None:
         """
         Called when a session request is rejected by a peer.
@@ -97,10 +100,10 @@ class Middleware(Protocol):
             peer: The actor that rejected the session
             reason: The reason given for rejection
         """
-        ...
+        pass
 
     async def on_session_close(
-        self, client: "AcpClient", peer: Actor, session: Session
+        self, client: "AcpClient", peer: "Actor", session: "Session"
     ) -> None:
         """
         Called when a session is closed.
@@ -110,4 +113,4 @@ class Middleware(Protocol):
             peer: The actor whose session was closed
             session: The session that was closed
         """
-        ...
+        pass

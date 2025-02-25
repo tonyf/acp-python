@@ -4,7 +4,7 @@ from acp_python.core.types import (
     SessionMessage,
     Message,
 )
-from acp_python.core.exception import SessionNotFound
+from acp_python.client.exception import SessionNotFound
 from nats.aio.msg import Msg
 
 if TYPE_CHECKING:
@@ -30,19 +30,18 @@ async def on_session_message(
     Raises:
         SessionNotFound: If the session ID in the message doesn't exist
     """
-    request = _Message.from_bytes(msg.data)
-    if not isinstance(request, SessionMessage):
-        return None
+    message = _Message.from_bytes(msg.data)
+    if not isinstance(message, SessionMessage):
+        raise ValueError("Message is not a session message")
 
     session = await client._session_store.get_session(
-        client.me_as_peer.id, request.session_id
+        client.me_as_peer.id, message.session_id
     )
     if session is None:
-        raise SessionNotFound(f"Session {request.session_id} not found")
+        raise SessionNotFound(f"Session {message.session_id} not found")
 
-    content = session.decrypt(request.content)
     return Message(
-        from_=request.from_,
-        to_=request.to_,
-        content=client._message_decoder(content),
+        session_id=message.session_id,
+        sender=session.peer,
+        content=session.decrypt(message.content),
     )
