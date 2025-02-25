@@ -1,7 +1,8 @@
-from typing import Protocol, Tuple, List, Optional
+from typing import Protocol, Tuple, List, Optional, Dict, Any
 from acp_python.core.types import Actor
 from ..middleware import Middleware
 from ..client import AcpClient
+import aiohttp
 
 
 class SessionPolicy(Protocol):
@@ -51,7 +52,29 @@ class WhitelistPolicy(SessionPolicy):
         return peer in self.allowed_actors, ""
 
 
-default_policy = AllowAllPolicy()
+class CloudWhitelistPolicy(SessionPolicy):
+    """
+    Policy that only allows sessions with a predefined list of actors from an API.
+
+    Args:
+        api_url: URL of the API to fetch allowed actors from.
+        token: Token to use for API authentication.
+    """
+
+    def __init__(self, api_url: str, token: str):
+        self.api_url = api_url
+        self.token = token
+
+    async def fetch_is_allowed(self, peer: Actor) -> Dict[str, Any]:
+        async with aiohttp.ClientSession() as client:
+            async with client.get(
+                self.api_url, headers={"Authorization": f"Bearer {self.token}"}
+            ) as response:
+                return await response.json()
+
+    async def __call__(self, peer: Actor) -> Tuple[bool, str]:
+        resp = await self.fetch_is_allowed(peer)
+        return resp["allowed"], resp["reason"]
 
 
 class SessionPolicyMiddleware(Middleware):

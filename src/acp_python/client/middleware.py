@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from acp_python.client.client import AcpClient
-    from acp_python.core.types import Message, Session, Actor
+    from acp_python.core.types import Session, Actor
 
 
 class Middleware(Protocol):

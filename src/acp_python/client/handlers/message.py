@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from acp_python.core.types import (
     _Message,
     SessionMessage,
@@ -6,7 +6,9 @@ from acp_python.core.types import (
 )
 from acp_python.core.exception import SessionNotFound
 from nats.aio.msg import Msg
-from ..client import AcpClient
+
+if TYPE_CHECKING:
+    from ..client import AcpClient
 
 
 async def on_session_message(

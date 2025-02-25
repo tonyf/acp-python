@@ -4,6 +4,7 @@ from typing import AsyncGenerator, List, Callable, Any
 import inspect
 import anyio
 import anyio.to_thread
+import os
 
 from nats.aio.client import Client as NatsClient
 from acp_python.core.types import (
@@ -16,6 +17,9 @@ import json
 from .handlers import on_handshake_msg, on_session_message
 from .middleware import Middleware
 from .session.store import SessionStore
+
+
+MessageHandler = Callable[[Message, "AcpClient"], None]
 
 
 class AcpClient:
@@ -31,7 +35,7 @@ class AcpClient:
         token: Authentication token for this actor
         session_store: Storage backend for managing sessions
         middleware: List of middleware components for custom behavior
-        server_url: URL of the NATS server (default: "nats://localhost:4222")
+        server_url: URL of the NATS server (default: "nats://acp.net:4222")
         message_decoder: Function to decode message content (default: json.loads)
     """
 
@@ -41,7 +45,7 @@ class AcpClient:
         token: str,
         session_store: SessionStore,
         middleware: List[Middleware],
-        server_url: str = "nats://localhost:4222",
+        server_url: str = "nats://acp.net:4222",
         message_decoder: Callable[[bytes], Any] = json.loads,
     ):
         self.actor_id = actor_id
@@ -166,9 +170,7 @@ class AcpClient:
             handshake_task.cancel()
             await handshake_task
 
-    async def listen(
-        self, message_handler: Callable[[Message, "AcpClient"], None]
-    ) -> None:
+    async def listen(self, message_handler: MessageHandler) -> None:
         """
         Listen for messages and process them with the provided handler.
 
@@ -186,9 +188,7 @@ class AcpClient:
             else:
                 await anyio.to_thread.run_sync(message_handler, message, self)
 
-    def listen_sync(
-        self, message_handler: Callable[[Message, "AcpClient"], None]
-    ) -> None:
+    def listen_sync(self, message_handler: MessageHandler) -> None:
         """
         Synchronous version of listen() that runs in the current thread.
 
@@ -196,3 +196,67 @@ class AcpClient:
             message_handler: Callback function to process received messages
         """
         asyncio.run(self.listen(message_handler))
+
+
+async def create_client(
+    actor_id: str | None,
+    token: str | None,
+    session_store: SessionStore | None,
+    middleware: List[Middleware] = [],
+    base_url: str = "https://api.acp.net",
+    use_cloud_policy: bool = True,
+    use_cloud_session_store: bool = True,
+) -> AcpClient:
+    """
+    Helper function to create an AcpClient with the central authority.
+
+    This function simplifies client creation by optionally adding cloud policy middleware
+    that communicates with the central authority to verify allowed connections.
+
+    Args:
+        actor_id: Unique identifier for this actor
+        token: Authentication token for this actor
+        session_store: Storage backend for managing sessions
+        middleware: List of middleware components for custom behavior
+        base_url: Base URL for the central authority API
+        use_cloud_policy: Whether to use the cloud whitelist policy
+
+    Returns:
+        Configured AcpClient instance ready for use
+    """
+    from .session.store import RedisSessionStore
+
+    actor_id = actor_id or os.getenv("ACP_ACTOR_ID")
+    token = token or os.getenv("ACP_TOKEN")
+
+    if actor_id is None or token is None:
+        raise ValueError("Actor ID and token must be provided")
+
+    # TODO: authenticate with the central authority and get the
+    # 1. NATS token
+    # 2. Redis token
+
+    if use_cloud_session_store and session_store is None:
+        session_store = RedisSessionStore(redis_url="redis://acp.net:6379/0")
+
+    if session_store is None:
+        raise ValueError(
+            "Session store must be provided or set `use_cloud_session_store` to True"
+        )
+
+    if use_cloud_policy:
+        from .session.policy import (
+            CloudWhitelistPolicy,
+            SessionPolicyMiddleware,
+        )
+
+        middleware.append(
+            SessionPolicyMiddleware(
+                CloudWhitelistPolicy(
+                    api_url=f"{base_url}/allowed-actors",
+                    token=token,
+                )
+            )
+        )
+    client = AcpClient(actor_id, token, session_store, middleware)
+    return client
