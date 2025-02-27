@@ -1,8 +1,10 @@
-from typing import Protocol, Tuple, List, Optional, Dict, Any
-from acp_python.client.types import Actor
-from acp_python.client.middleware import Middleware
-from acp_python.client.client import AcpClient
+from typing import Protocol, Tuple, List, Optional, Dict, Any, TYPE_CHECKING
 import aiohttp
+from acp_python.client.middleware import Middleware
+
+if TYPE_CHECKING:
+    from acp_python.client.client import AcpClient
+    from acp_python.client.types import Actor
 
 
 class SessionPolicy(Protocol):
@@ -20,20 +22,20 @@ class SessionPolicy(Protocol):
             return False, "Only trusted actors allowed"
     """
 
-    async def __call__(self, peer: Actor) -> Tuple[bool, str]: ...
+    async def __call__(self, peer: "Actor") -> Tuple[bool, str]: ...
 
 
 class AllowAllPolicy(SessionPolicy):
     """Policy that allows sessions with all actors."""
 
-    async def __call__(self, peer: Actor) -> Tuple[bool, str]:
+    async def __call__(self, peer: "Actor") -> Tuple[bool, str]:
         return True, ""
 
 
 class DenyAllPolicy(SessionPolicy):
     """Policy that denies sessions with all actors."""
 
-    async def __call__(self, peer: Actor) -> Tuple[bool, str]:
+    async def __call__(self, peer: "Actor") -> Tuple[bool, str]:
         return False, "Sessions are not allowed"
 
 
@@ -45,10 +47,10 @@ class WhitelistPolicy(SessionPolicy):
         allowed_actors: List of Actor objects that are allowed to establish sessions.
     """
 
-    def __init__(self, allowed_actors: List[Actor]):
+    def __init__(self, allowed_actors: List["Actor"]):
         self.allowed_actors = allowed_actors
 
-    async def __call__(self, peer: Actor) -> Tuple[bool, str]:
+    async def __call__(self, peer: "Actor") -> Tuple[bool, str]:
         return peer in self.allowed_actors, ""
 
 
@@ -65,14 +67,14 @@ class CloudWhitelistPolicy(SessionPolicy):
         self.api_url = api_url
         self.token = token
 
-    async def fetch_is_allowed(self, peer: Actor) -> Dict[str, Any]:
+    async def fetch_is_allowed(self, peer: "Actor") -> Dict[str, Any]:
         async with aiohttp.ClientSession() as client:
             async with client.get(
                 self.api_url, headers={"Authorization": f"Bearer {self.token}"}
             ) as response:
                 return await response.json()
 
-    async def __call__(self, peer: Actor) -> Tuple[bool, str]:
+    async def __call__(self, peer: "Actor") -> Tuple[bool, str]:
         resp = await self.fetch_is_allowed(peer)
         return resp["allowed"], resp["reason"]
 
@@ -92,7 +94,7 @@ class SessionPolicyMiddleware(Middleware):
         self.session_policy = session_policy
 
     async def on_session_request(
-        self, client: AcpClient, me: Actor, peer: Actor
+        self, client: "AcpClient", me: "Actor", peer: "Actor"
     ) -> Tuple[bool, Optional[str]]:
         """
         Handles incoming session requests by checking against the session policy.

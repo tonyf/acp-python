@@ -5,7 +5,6 @@ import inspect
 import anyio
 import anyio.to_thread
 import os
-
 from nats.aio.client import Client as NatsClient
 from .types import (
     Actor,
@@ -13,10 +12,14 @@ from .types import (
     Session,
     Message,
     SessionMessage,
+    HandshakeRequest,
 )
-from .handlers import on_handshake_msg, on_session_message
+from .handlers import on_handshake_request, on_session_message, on_handshake_response
 from .middleware import Middleware
 from .session.store import SessionStore
+from cryptography.hazmat.primitives.asymmetric import x25519
+
+SigningKey = x25519.X25519PrivateKey
 
 
 MessageHandler = Callable[[Message, "AcpClient"], None]
@@ -73,12 +76,20 @@ class AcpClient:
     @property
     def me(self) -> MyActor:
         """Returns this actor's full identity including private details."""
-        raise NotImplementedError
+        return MyActor(
+            id=self.actor_id,
+            namespace_keys={"test": SigningKey.generate()},
+            description={},
+            ca_signature=bytes(),
+        )
 
-    @property
-    def me_as_peer(self) -> Actor:
+    def me_as_peer(self, namespace: str) -> Actor:
         """Returns this actor's public identity as seen by peers."""
-        raise NotImplementedError
+        return Actor(
+            id=self.actor_id,
+            namespace=namespace,
+            description={},
+        )
 
     @property
     def peers(self) -> List[Actor]:
@@ -103,7 +114,7 @@ class AcpClient:
         """
         handshake_sub = await nc.subscribe(f"acp.{self.actor_id}.handshake.*")
         async for msg in handshake_sub.messages:
-            await on_handshake_msg(msg, client=self)
+            await on_handshake_request(msg, client=self)
 
     async def _listen_session_messages(
         self, nc: NatsClient
@@ -118,11 +129,15 @@ class AcpClient:
             Decrypted and decoded messages from peers
         """
         session_sub = await nc.subscribe(f"acp.{self.actor_id}.inbox.*")
-        async for msg in session_sub.messages:
-            message = await on_session_message(msg, client=self)
-            if message is not None:
-                yield message
-            await msg.ack()
+        try:
+            async for msg in session_sub.messages:
+                message = await on_session_message(msg, client=self)
+                if message is not None:
+                    yield message
+                await msg.ack()
+        except Exception as e:
+            # Log the error but don't re-raise to allow graceful shutdown
+            print(f"Error in _listen_session_messages: {e}")
 
     ###
     ### Methods
@@ -135,8 +150,17 @@ class AcpClient:
         Args:
             peer: The actor to connect with
         """
-        # create a session with the peer
-        raise
+        if self._nc is None:
+            raise RuntimeError("Client not connected to NATS server")
+
+        req = HandshakeRequest(
+            sender=self.me_as_peer(peer.namespace),
+            recipient=peer,
+            public_key=self.me.namespace_keys[peer.namespace].private_bytes_raw(),
+            certificate=self.me.ca_signature,
+        )
+        rsp = await self._nc.request(peer.to_dns(), req.to_bytes())
+        await on_handshake_response(rsp, client=self)
 
     async def send_message(self, session_id: str, content: bytes) -> None:
         """
@@ -164,6 +188,8 @@ class AcpClient:
         # Encrypt the message & create the message object
         session_message = SessionMessage(
             session_id=session.id,
+            sender=self.me_as_peer(session.peer.namespace),
+            recipient=session.peer,
             content=session.encrypt(content),
         )
         encoded_message = session_message.to_bytes()
@@ -179,17 +205,18 @@ class AcpClient:
             An async generator yielding decrypted and decoded messages from peers
         """
         if self._nc is None:
-            nc = await nats.connect(self.server_url)
-        else:
-            nc = self._nc
+            self._nc = await nats.connect(self.server_url)
 
-        handshake_task = asyncio.create_task(self._listen_handshake_msgs(nc))
+        handshake_task = asyncio.create_task(self._listen_handshake_msgs(self._nc))
         try:
-            async for message in self._listen_session_messages(nc):
+            async for message in self._listen_session_messages(self._nc):
                 yield message
         finally:
             handshake_task.cancel()
-            await handshake_task
+            try:
+                await handshake_task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling the task
 
     async def listen(self, message_handler: MessageHandler) -> None:
         """
@@ -201,13 +228,24 @@ class AcpClient:
         Args:
             message_handler: Callback function to process received messages
         """
-        async for message in self.messages():
-            # If message_handler is an async function, just await it
-            if inspect.iscoroutinefunction(message_handler):
-                await message_handler(message, self)
-            # Otherwise, run it in a worker thread so we don't block the event loop
-            else:
-                await anyio.to_thread.run_sync(message_handler, message, self)
+        try:
+            async for message in self.messages():
+                try:
+                    # If message_handler is an async function, just await it
+                    if inspect.iscoroutinefunction(message_handler):
+                        await message_handler(message, self)
+                    # Otherwise, run it in a worker thread so we don't block the event loop
+                    else:
+                        await anyio.to_thread.run_sync(message_handler, message, self)
+                except Exception as e:
+                    # Log handler errors but continue processing messages
+                    print(f"Error in message handler: {e}")
+        except asyncio.CancelledError:
+            # Allow clean cancellation
+            raise
+        except Exception as e:
+            # Log other errors but allow clean shutdown
+            print(f"Error in message listener: {e}")
 
     def listen_sync(self, message_handler: MessageHandler) -> None:
         """
@@ -216,7 +254,11 @@ class AcpClient:
         Args:
             message_handler: Callback function to process received messages
         """
-        asyncio.run(self.listen(message_handler))
+        try:
+            asyncio.run(self.listen(message_handler))
+        except KeyboardInterrupt:
+            # Allow clean Ctrl+C shutdown
+            pass
 
     async def start(self):
         """
@@ -226,7 +268,9 @@ class AcpClient:
         if self._running:
             return self
 
-        self._nc = await nats.connect(self.server_url)
+        self._nc = await nats.connect(self.server_url, {})
+        self._js = self._nc.jetstream()
+        self._js.publish
         await self._session_store.__aenter__()
         for middleware in self._middleware:
             await middleware.__aenter__()
@@ -286,8 +330,8 @@ async def create_client(
     """
     from .session.store import RedisSessionStore
 
-    actor_id = actor_id or os.getenv("ACP_ACTOR_ID")
-    token = token or os.getenv("ACP_TOKEN")
+    actor_id = actor_id or os.environ.get("ACP_ACTOR_ID")
+    token = token or os.environ.get("ACP_TOKEN")
 
     if actor_id is None or token is None:
         raise ValueError("Actor ID and token must be provided")

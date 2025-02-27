@@ -1,15 +1,14 @@
 from typing import Dict, List, Optional
 from pydantic import BaseModel
+from cryptography.hazmat.primitives.asymmetric import x25519
+
+SigningKey = x25519.X25519PrivateKey
 
 
 class Actor(BaseModel):
     id: str
     namespace: str
     description: dict
-
-    # name: str
-    # public_key: bytes
-    # certificate: bytes
 
     @classmethod
     def new(cls, id: str, namespace: str, description: dict) -> "Actor":

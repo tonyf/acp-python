@@ -1,6 +1,5 @@
 from .actor import Actor, MyActor
 from .message import (
-    _Message,
     Message,
     SessionMessage,
     MessageType,

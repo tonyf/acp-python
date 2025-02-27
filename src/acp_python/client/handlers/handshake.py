@@ -2,19 +2,20 @@ import uuid
 from typing import TYPE_CHECKING
 from nats.aio.msg import Msg
 from acp_python.client.types import (
-    _Message,
+    Message,
     HandshakeRequest,
     HandshakeAccept,
     HandshakeReject,
     Session,
 )
 from acp_python.client.crypto import generate_keys, compute_shared_secret
+from acp_python.client import exception
 
 if TYPE_CHECKING:
     from ..client import AcpClient
 
 
-async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
+async def on_handshake_request(msg: Msg, *, client: "AcpClient") -> None:
     """
     Handles incoming handshake messages for establishing secure sessions between actors.
 
@@ -36,7 +37,7 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
         - Sends response message (accept/reject) to requester
         - Notifies middleware of session creation
     """
-    request = _Message.from_bytes(msg.data)
+    request = Message.from_bytes(msg.data)
     if not isinstance(request, HandshakeRequest):
         return
 
@@ -46,7 +47,7 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
 
     for middleware in client._middleware:
         allowed, reason = await middleware.on_session_request(
-            client, client.me_as_peer, request.sender
+            client, client.me_as_peer(request.sender.namespace), request.sender
         )
         allowed_responses.append(allowed)
         if not allowed and reason:
@@ -59,7 +60,7 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
             "; ".join(rejection_reasons) if rejection_reasons else "Unknown reason"
         )
         reject = HandshakeReject(
-            sender=client.me_as_peer,
+            sender=client.me_as_peer(request.sender.namespace),
             recipient=request.sender,
             reason=combined_reason,
         )
@@ -76,7 +77,7 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
 
     # Send an accept message to the requester
     accept = HandshakeAccept(
-        sender=client.me_as_peer,
+        sender=client.me_as_peer(request.sender.namespace),
         recipient=request.sender,
         session_id=session.id,
         public_key=public_key,
@@ -89,3 +90,27 @@ async def on_handshake_msg(msg: Msg, *, client: "AcpClient") -> None:
     # Notify middleware of session creation
     for middleware in client._middleware:
         await middleware.on_session_create(client, request.sender, session)
+
+
+async def on_handshake_response(msg: Msg, *, client: "AcpClient") -> None:
+    response = Message.from_bytes(msg.data)
+
+    if isinstance(response, HandshakeAccept):
+        session = Session(
+            id=response.session_id,
+            peer=response.sender,
+            shared_secret=compute_shared_secret(
+                client.me.namespace_keys[response.sender.namespace],
+                response.public_key,
+            ),
+        )
+        await client._session_store.set_session(session.id, session)
+
+        # Notify middleware of session creation
+        for middleware in client._middleware:
+            await middleware.on_session_create(client, response.sender, session)
+    elif isinstance(response, HandshakeReject):
+        # TODO: Handle rejection
+        raise exception.SessionRejected(response.reason)
+    else:
+        raise RuntimeError("Invalid handshake response")

@@ -1,6 +1,6 @@
 from typing import Optional, TYPE_CHECKING
 from acp_python.client.types import (
-    _Message,
+    Message,
     SessionMessage,
     Message,
 )
@@ -30,18 +30,19 @@ async def on_session_message(
     Raises:
         SessionNotFound: If the session ID in the message doesn't exist
     """
-    message = _Message.from_bytes(msg.data)
+    message = Message.from_bytes(msg.data)
     if not isinstance(message, SessionMessage):
         raise ValueError("Message is not a session message")
 
     session = await client._session_store.get_session(
-        client.me_as_peer.id, message.session_id
+        client.me_as_peer(message.sender.namespace).id, message.session_id
     )
     if session is None:
         raise SessionNotFound(f"Session {message.session_id} not found")
 
-    return Message(
+    return SessionMessage(
         session_id=message.session_id,
         sender=session.peer,
+        recipient=client.me_as_peer(message.sender.namespace),
         content=session.decrypt(message.content),
     )
