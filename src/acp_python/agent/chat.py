@@ -1,7 +1,8 @@
-from .base import Agent, TextMessage
+from .base import Agent, TextMessage, ConversationSession, AgentInfo
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionToolParam
 import os
+import uuid
+import json
 
 
 class ChatAgent(Agent):
@@ -24,59 +25,85 @@ class ChatAgent(Agent):
         self.system_prompt = system_prompt
         self.temperature = temperature
 
+    async def delegate_to_agent(
+        self, target_agent: AgentInfo, content: str, session: ConversationSession
+    ) -> str:
+        """
+        Delegate a task to another agent.
+        Creates a new agent-to-agent session while maintaining reference to original session.
+        Returns the new session_id for the delegation.
+        """
+        # Create a new session ID for agent-to-agent communication
+        agent_session_id = str(uuid.uuid4())
+
+        # Parse content if it's in {"msg": "..."} format from tool calls
+        try:
+            content_data = json.loads(content)
+            if isinstance(content_data, dict) and "msg" in content_data:
+                content = content_data["msg"]
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, keep the original content
+            pass
+
+        # Send the message to the target agent with NEW session_id
+        sent_message = TextMessage(
+            content=content,
+            source=self.info,
+            session_id=agent_session_id,
+            metadata={
+                "original_user": session.original_user.name,
+                "original_session_id": session.session_id,
+            },
+        )
+        await self.send(target_agent, sent_message)
+
+        # Also record this delegation in the original session
+        delegation_note = TextMessage(
+            content=f"[Delegated to {target_agent.name}: {content}]",
+            source=self.info,
+            session_id=session.session_id,
+        )
+        session.append(delegation_note)
+        await self.update_session(session)
+
+        return agent_session_id
+
     async def on_message(self, message: TextMessage):
-        # What happens when i get a message from another agent about a user? how do i continue the conversation with the user?
+        session = await self.get_or_create_session(message.source, message.session_id)
+        session.append(message)
+        await self.update_session(session)
+
         # Format the chat history for OpenAI
         messages = [{"role": "system", "content": self.system_prompt}]
-
-        history = await self.get_history(message.source)
-
-        # Add relevant conversation history
-        for msg in history.messages:
-            role = "assistant" if msg.source == self._name else "user"
+        for msg in session.messages:
+            if msg.source == self._name:
+                role = "assistant"
+            else:
+                role = "user"
             messages.append({"role": role, "content": msg.content})
 
-        # Add the current message
-        messages.append({"role": "user", "content": message.content})
+        # Call the OpenAI API
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,  # type: ignore
+            temperature=self.temperature,
+            # tools=[peer.to_tool() for peer in self.peers],
+        )
+        assistant_message = response.choices[0].message
 
-        try:
-            # Call the OpenAI API
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,  # type: ignore
-                temperature=self.temperature,
-                tools=[peer.to_tool() for peer in self.peers],
-            )
+        # Regular text reply - send back to the original user
+        reply_content = assistant_message.content
+        if reply_content is None:
+            raise Exception("No response from OpenAI")
 
-            # Extract the assistant's response
-            assistant_message = response.choices[0].message
-            sent_message: TextMessage | None = None
+        # Send response to original user
+        sent_message = TextMessage(
+            content=reply_content,
+            source=self.info,
+            session_id=session.session_id,
+        )
+        await self.send(session.original_user, sent_message)
 
-            # Check if the response is a tool call or a regular reply
-            if assistant_message.tool_calls:
-                # Handle tool call (message to another agent)
-                tool_call = assistant_message.tool_calls[0]
-                target_agent = tool_call.function.name
-                tool_content = tool_call.function.arguments
-
-                # Send the message to the target agent
-                sent_message = TextMessage(content=tool_content, source=self._name)
-                await self.send(target_agent, sent_message)
-            else:
-                # Regular text reply
-                reply_content = assistant_message.content
-                if reply_content is None:
-                    raise Exception("No response from OpenAI")
-
-                # Send the response back & update history
-                sent_message = TextMessage(content=reply_content, source=self._name)
-                await self.send(message.source, sent_message)
-
-            history.messages.extend([message, sent_message])
-            await self.put_history(message.source, history)
-
-        except Exception as e:
-            error_message = f"Error generating response: {str(e)}"
-            await self.send(
-                message.source, TextMessage(content=error_message, source=self._name)
-            )
+        # Update session with the sent message
+        session.append(sent_message)
+        await self.update_session(session)
