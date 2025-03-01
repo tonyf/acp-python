@@ -12,6 +12,7 @@ from .types import (
     HandshakeResponse,
 )
 from .session.store import SessionStore, default_session_store
+from .session.policy import SessionPolicy, AllowAllPolicy
 from datetime import datetime
 import logging
 
@@ -26,12 +27,15 @@ class Agent(ABC):
         peers: List[AgentInfo] = [],
         server_url: str = "nats://localhost:4222",
         session_store: SessionStore = default_session_store,
+        session_policy: SessionPolicy = AllowAllPolicy(),
     ):
         self._name = name
         self._description = description
         self._server_url = server_url
         self._peers = peers
+
         self._session_store = session_store
+        self._session_policy = session_policy
 
     @property
     def name(self) -> str:
@@ -111,7 +115,7 @@ class Agent(ABC):
         handshake_request = HandshakeRequest.model_validate_json(msg.data)
         logger.info(f"Handshake request: {handshake_request}")
 
-        should_accept = True
+        should_accept, reason = await self._session_policy(handshake_request.from_agent)
         if should_accept:
             session = ConversationSession(
                 session_id=handshake_request.session_id,
@@ -123,16 +127,26 @@ class Agent(ABC):
                 handshake_request.session_id,
                 session,
             )
-
-        await msg.respond(
-            HandshakeResponse(
-                session_id=handshake_request.session_id,
-                metadata=handshake_request.metadata,
-                accept=True,
+            await msg.respond(
+                HandshakeResponse(
+                    session_id=handshake_request.session_id,
+                    metadata=handshake_request.metadata,
+                    accept=True,
+                )
+                .model_dump_json()
+                .encode(),
             )
-            .model_dump_json()
-            .encode(),
-        )
+        else:
+            await msg.respond(
+                HandshakeResponse(
+                    session_id=handshake_request.session_id,
+                    metadata=handshake_request.metadata,
+                    accept=False,
+                    reason=reason,
+                )
+                .model_dump_json()
+                .encode(),
+            )
 
     async def establish_session(
         self, peer: AgentInfo, session_id: str | None = None, metadata: dict = {}

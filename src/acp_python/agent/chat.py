@@ -1,7 +1,8 @@
 from .base import Agent, TextMessage, ConversationSession, AgentInfo
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 import os
+from typing import cast
 
 
 class ChatAgent(Agent):
@@ -34,7 +35,9 @@ class ChatAgent(Agent):
         """
         raise NotImplementedError("Delegation not implemented")
 
-    async def assemble_conversation(self, session: ConversationSession) -> list[dict]:
+    async def assemble_conversation(
+        self, session: ConversationSession
+    ) -> list[ChatCompletionMessageParam]:
         """
         Get the conversation history in openai format
         """
@@ -45,16 +48,17 @@ class ChatAgent(Agent):
             else:
                 role = "user"
             messages.append({"role": role, "content": msg.content})
-        return messages
+        return cast(list[ChatCompletionMessageParam], messages)
 
-    async def get_completion(self, messages: list[dict]) -> ChatCompletion:
+    async def get_completion(
+        self, messages: list[ChatCompletionMessageParam]
+    ) -> ChatCompletion:
         """
         Call the OpenAI API with the given messages
         """
-        response = await self.client.chat.completions.create(
+        return await self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=self.temperature
         )
-        return response
 
     async def on_message(self, session: ConversationSession):
         # TODO:

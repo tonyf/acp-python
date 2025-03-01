@@ -128,3 +128,6 @@ class HandshakeResponse(BaseModel):
 
     accept: bool
     """Whether the handshake was accepted."""
+
+    reason: str | None = None
+    """The reason the handshake was rejected."""
