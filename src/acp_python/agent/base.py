@@ -128,10 +128,14 @@ class Agent(ABC):
 
         should_accept, reason = await self._session_policy(handshake_request.from_agent)
         if should_accept:
+            # Create a new session
+            keypair = KeyPair.generate()
             session = ConversationSession(
                 session_id=handshake_request.session_id,
                 original_user=handshake_request.from_agent,
                 participants=[handshake_request.from_agent, self.info],
+                my_keypair=keypair,
+                peer_public_key=handshake_request.public_key,
             )
             await self._session_store.set_session(
                 self.info.name,
@@ -143,6 +147,7 @@ class Agent(ABC):
                     session_id=handshake_request.session_id,
                     metadata=handshake_request.metadata,
                     accept=True,
+                    public_key=keypair.public_key,
                 )
                 .model_dump_json()
                 .encode(),
