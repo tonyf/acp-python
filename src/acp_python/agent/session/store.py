@@ -1,0 +1,77 @@
+from typing import Protocol, Optional
+from typing import Dict
+from ..types import ConversationSession
+
+
+class SessionStore(Protocol):
+    """
+    A protocol (interface) for storing and retrieving Sessions by their ID.
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    async def get_session(
+        self, actor_id: str, session_id: str
+    ) -> Optional[ConversationSession]:
+        """
+        Retrieve a session by ID.
+        """
+        ...
+
+    async def set_session(
+        self, actor_id: str, session_id: str, session: ConversationSession
+    ) -> None:
+        """
+        Store a session by its ID.
+        """
+        ...
+
+    async def delete_session(self, actor_id: str, session_id: str) -> None:
+        """
+        Remove the session by ID.
+        """
+        ...
+
+
+class InMemorySessionStore(SessionStore):
+    """
+    An in-memory session store using a singleton pattern to share state
+    across threads within the same Python process.
+    """
+
+    _instance = None
+    _sessions: Dict[str, ConversationSession] = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def session_key(self, actor_id: str, session_id: str) -> str:
+        return f"acp.agent.{actor_id}.session.{session_id}"
+
+    async def get_session(
+        self, actor_id: str, session_id: str
+    ) -> Optional[ConversationSession]:
+        return self._sessions.get(self.session_key(actor_id, session_id))
+
+    async def set_session(
+        self, actor_id: str, session_id: str, session: ConversationSession
+    ) -> None:
+        self._sessions[self.session_key(actor_id, session_id)] = session
+
+    async def delete_session(self, actor_id: str, session_id: str) -> None:
+        self._sessions.pop(self.session_key(actor_id, session_id), None)
+
+
+default_session_store = InMemorySessionStore()

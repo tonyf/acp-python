@@ -17,9 +17,6 @@ def chat(
     nats_url: str = "nats://local:rz3KgXUIm0SDr0oMUl1uNkHWqd0CUBm8@0.0.0.0:4222",
 ):
     async def main():
-        session_id = str(uuid.uuid4())
-        print(f"Starting new conversation (Session ID: {session_id})")
-
         # Create agents
         chat = ChatAgent(
             name="assistant-1",
@@ -37,16 +34,15 @@ def chat(
         )
         user = UserInterface(
             name="tony-1",
-            session_id=session_id,
             description="A user interface for the chat agent.",
             peers=[chat.info],
             server_url=nats_url,
         )
 
         # Connect all agents
-        await chat._connect()
-        await pirate._connect()
-        await user._connect()
+        await chat.connect()
+        await pirate.connect()
+        await user.connect()
 
         # Register peers
         await chat.register_peer(pirate.info)
@@ -58,10 +54,10 @@ def chat(
         pirate_task = asyncio.create_task(pirate.run())
 
         # Create a new session between user and chat agent
-        session_id = await chat.establish_session(user.info, session_id)
+        await user.establish_session(chat.info, user.session_id)
+        print(f"Starting new conversation (Session ID: {user.session_id})")
 
         # Get initial message from user
-        
         print("Type 'exit' to quit")
         user_input = prompt("> ")
 
@@ -72,7 +68,7 @@ def chat(
                 TextMessage(
                     content=user_input,
                     source=user.info,
-                    session_id=session_id,
+                    session_id=user.session_id,
                 ),
             )
 

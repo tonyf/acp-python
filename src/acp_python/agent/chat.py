@@ -1,8 +1,7 @@
 from .base import Agent, TextMessage, ConversationSession, AgentInfo
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
 import os
-import uuid
-import json
 
 
 class ChatAgent(Agent):
@@ -33,47 +32,12 @@ class ChatAgent(Agent):
         Creates a new agent-to-agent session while maintaining reference to original session.
         Returns the new session_id for the delegation.
         """
-        # Create a new session ID for agent-to-agent communication
-        agent_session_id = str(uuid.uuid4())
+        raise NotImplementedError("Delegation not implemented")
 
-        # Parse content if it's in {"msg": "..."} format from tool calls
-        try:
-            content_data = json.loads(content)
-            if isinstance(content_data, dict) and "msg" in content_data:
-                content = content_data["msg"]
-        except (json.JSONDecodeError, TypeError):
-            # If parsing fails, keep the original content
-            pass
-
-        # Send the message to the target agent with NEW session_id
-        sent_message = TextMessage(
-            content=content,
-            source=self.info,
-            session_id=agent_session_id,
-            metadata={
-                "original_user": session.original_user.name,
-                "original_session_id": session.session_id,
-            },
-        )
-        await self.send(target_agent, sent_message)
-
-        # Also record this delegation in the original session
-        delegation_note = TextMessage(
-            content=f"[Delegated to {target_agent.name}: {content}]",
-            source=self.info,
-            session_id=session.session_id,
-        )
-        session.append(delegation_note)
-        await self.update_session(session)
-
-        return agent_session_id
-
-    async def on_message(self, message: TextMessage):
-        session = await self.get_or_create_session(message.source, message.session_id)
-        session.append(message)
-        await self.update_session(session)
-
-        # Format the chat history for OpenAI
+    async def assemble_conversation(self, session: ConversationSession) -> list[dict]:
+        """
+        Get the conversation history in openai format
+        """
         messages = [{"role": "system", "content": self.system_prompt}]
         for msg in session.messages:
             if msg.source == self._name:
@@ -81,18 +45,29 @@ class ChatAgent(Agent):
             else:
                 role = "user"
             messages.append({"role": role, "content": msg.content})
+        return messages
 
-        # Call the OpenAI API
+    async def get_completion(self, messages: list[dict]) -> ChatCompletion:
+        """
+        Call the OpenAI API with the given messages
+        """
         response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,  # type: ignore
-            temperature=self.temperature,
-            # tools=[peer.to_tool() for peer in self.peers],
+            model=self.model, messages=messages, temperature=self.temperature
         )
-        assistant_message = response.choices[0].message
+        return response
 
-        # Regular text reply - send back to the original user
-        reply_content = assistant_message.content
+    async def on_message(self, session: ConversationSession):
+        # TODO:
+        # if you call a tool and create a new conversation,
+        # that conversation should have the context of the original conversation
+        # in the system prompt (delegation prompt)
+        # the agent can respond to the original user as a tool call
+
+        # Format the chat history for OpenAI
+        messages = await self.assemble_conversation(session)
+        response = await self.get_completion(messages)
+
+        reply_content = response.choices[0].message.content
         if reply_content is None:
             raise Exception("No response from OpenAI")
 
@@ -103,7 +78,3 @@ class ChatAgent(Agent):
             session_id=session.session_id,
         )
         await self.send(session.original_user, sent_message)
-
-        # Update session with the sent message
-        session.append(sent_message)
-        await self.update_session(session)
