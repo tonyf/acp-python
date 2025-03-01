@@ -8,8 +8,10 @@ from .types import (
     AgentInfo,
     ConversationSession,
     TextMessage,
+    EncryptedMessage,
     HandshakeRequest,
     HandshakeResponse,
+    KeyPair,
 )
 from .session.store import SessionStore, default_session_store
 from .session.policy import SessionPolicy, AllowAllPolicy
@@ -65,16 +67,21 @@ class Agent(ABC):
     async def _message_handler(self, msg: Msg):
         await msg.ack()
 
-        message = TextMessage.model_validate_json(msg.data)
+        encrypted_message = EncryptedMessage.model_validate_json(msg.data)
         session = await self._session_store.get_session(
-            self.info.name, message.session_id
+            self.info.name, encrypted_message.session_id
         )
         if session is None:
             return
 
-        updated_session = session.append(message)
+        # Decrypt the message and append it to the session
+        decrypted_message = encrypted_message.decrypt(
+            session.my_keypair.private_key.exchange(session.peer_public_key)
+        )
+        updated_session = session.append(decrypted_message)
+
         await self._session_store.set_session(
-            self.info.name, message.session_id, updated_session
+            self.info.name, decrypted_message.session_id, updated_session
         )
         await self.on_message(updated_session)
 
@@ -96,10 +103,14 @@ class Agent(ABC):
                 "Make sure to establish a session with the peer first."
             )
 
+        encrypted_message = message.encrypt(
+            session.my_keypair.private_key.exchange(session.peer_public_key)
+        )
+
         # Send the message to the peer
         await self._js.publish(
             self.message_key(to, message.session_id),
-            message.model_dump_json().encode(),
+            encrypted_message.model_dump_json().encode(),
         )
 
         # Update the session with the new message
@@ -162,24 +173,33 @@ class Agent(ABC):
         ) is not None:
             raise Exception(f"Session {session_id} already exists")
 
-        handshake_request = HandshakeRequest(
-            from_agent=self.info,
-            session_id=session_id,
-            metadata=metadata or {},
+        # Generate a keypair
+        keypair = KeyPair.generate()
+        handshake_request = (
+            HandshakeRequest(
+                from_agent=self.info,
+                session_id=session_id,
+                metadata=metadata or {},
+                public_key=keypair.public_key,
+            )
+            .model_dump_json()
+            .encode()
         )
         resp = await self._nc.request(
             self.handshake_key(peer),
-            handshake_request.model_dump_json().encode(),
+            handshake_request,
         )
         logger.info(f"Handshake response: {resp.data}")
 
         handshake_response = HandshakeResponse.model_validate_json(resp.data)
-        if not handshake_response.accept:
+        if not handshake_response.accept or handshake_response.public_key is None:
             raise Exception("Handshake rejected")
 
-        # Create a new session or get existing one
+        # Create a new session
         session = ConversationSession(
             session_id=session_id,
+            my_keypair=keypair,
+            peer_public_key=handshake_response.public_key,
             original_user=peer,
             participants=[peer, self.info],
             created_at=datetime.now().isoformat(),
