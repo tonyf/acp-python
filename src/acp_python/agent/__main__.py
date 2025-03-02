@@ -1,6 +1,6 @@
 from typer import Typer
-from .chat import ChatAgent
-from .user import UserInterface
+from .examples.chat import ChatAgent
+from .examples.user import UserInterface
 import asyncio
 
 app = Typer()

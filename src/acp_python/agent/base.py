@@ -18,7 +18,7 @@ from .types import (
     HandshakeResponse,
     KeyPair,
 )
-from .crypto import decrypt, encrypt
+from .utils.crypto import decrypt, encrypt
 from .session.store import SessionStore, default_session_store
 from .session.policy import SessionPolicy, AllowAllPolicy
 from datetime import datetime

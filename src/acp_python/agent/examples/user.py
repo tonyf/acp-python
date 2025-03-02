@@ -1,5 +1,5 @@
-from .types import TextMessage, AgentInfo, ConversationSession
-from .base import Agent
+from ..types import TextMessage, AgentInfo, ConversationSession
+from ..base import Agent
 from typer import prompt
 from rich.console import Console
 import uuid

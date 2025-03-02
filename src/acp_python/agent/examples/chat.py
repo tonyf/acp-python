@@ -1,4 +1,4 @@
-from .base import Agent, TextMessage, ConversationSession, AgentInfo
+from ..base import Agent, TextMessage, ConversationSession, AgentInfo
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 import os

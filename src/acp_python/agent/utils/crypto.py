@@ -1,4 +1,4 @@
-from .types import EncryptedMessage, TextMessage
+from ..types import EncryptedMessage, TextMessage
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
 
