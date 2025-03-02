@@ -4,8 +4,6 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from openai.types.chat import ChatCompletionToolParam
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import x25519
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import os
 
 
 class KeyPair(BaseModel):
@@ -109,36 +107,20 @@ class TextMessage(BaseMessage):
 
     type: Literal["TextMessage"] = "TextMessage"
 
-    def encrypt(self, shared_secret: bytes) -> "EncryptedMessage":
-        key = shared_secret[:32]
-        nonce = os.urandom(24)
-        cipher = AESGCM(key)
-        content = cipher.encrypt(nonce, self.model_dump_json().encode(), None)
-        return EncryptedMessage(
-            content=content, session_id=self.session_id, source=self.source, nonce=nonce
-        )
 
-
-class EncryptedMessage(BaseMessage):
+class EncryptedMessage(BaseModel):
     """An encrypted message."""
 
     session_id: str
     """The session ID of the message."""
 
-    content: bytes
+    content: str
     """The encrypted content of the message."""
 
-    nonce: bytes
+    nonce: str
     """The nonce of the message."""
 
     type: Literal["EncryptedMessage"] = "EncryptedMessage"
-
-    def decrypt(self, shared_secret: bytes) -> TextMessage:
-        key = shared_secret[:32]
-        nonce = self.nonce
-        cipher = AESGCM(key)
-        content = cipher.decrypt(nonce, self.content, None)
-        return TextMessage.model_validate_json(content)
 
 
 class MessageHistory(BaseModel):
