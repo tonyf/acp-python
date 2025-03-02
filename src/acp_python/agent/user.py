@@ -4,6 +4,8 @@ from typer import prompt
 from rich.console import Console
 import uuid
 import logging
+import asyncio
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +16,11 @@ class UserInterface(Agent):
     def __init__(
         self,
         name: str = "user",
+        session_id: str | None = None,
         **kwargs,
     ):
         super().__init__(name, **kwargs)
-        self.session_id = str(uuid.uuid4())
+        self.session_id = session_id or str(uuid.uuid4())
 
     def message_key(self, agent_info: AgentInfo, _: str = "*") -> str:
         return super().message_key(agent_info, self.session_id)
@@ -46,3 +49,32 @@ class UserInterface(Agent):
                 session_id=session.session_id,  # Preserve session ID
             ),
         )
+
+    async def run(self, peers: List[AgentInfo] = []):
+        assert len(peers) == 1, "User interface must have exactly one peer"
+        peer = peers[0]
+
+        loop = asyncio.create_task(super().run(peers))
+
+        while self._nc is None:
+            await asyncio.sleep(1)
+
+        session_id = await self.establish_session(peer, self.session_id)
+        assert session_id == self.session_id, "Session ID mismatch"
+        console.print(f"Starting new conversation (Session ID: {session_id})")
+        console.print("Type 'exit' to quit")
+        user_input = console.input("> ")
+
+        if user_input.lower() == "exit":
+            raise KeyboardInterrupt()
+
+        await self.send(
+            peer,
+            TextMessage(
+                content=user_input,
+                source=self.info,
+                session_id=self.session_id,
+            ),
+        )
+
+        await loop

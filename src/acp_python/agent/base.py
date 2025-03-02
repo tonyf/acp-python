@@ -1,6 +1,11 @@
-from typing import List
+from typing import List, Dict
+
 import nats
-from nats.aio.client import Msg
+import nats.errors
+import nats.js
+from nats.aio.client import Msg, Client as NatsClient
+from nats.js.client import JetStreamContext
+from nats.js.api import ConsumerInfo
 from abc import abstractmethod, ABC
 import uuid
 import asyncio
@@ -37,6 +42,12 @@ class Agent(ABC):
         self._session_store = session_store
         self._session_policy = session_policy
 
+        self._nc: NatsClient = None  # type: ignore
+        self._js: JetStreamContext = None  # type: ignore
+
+        self._pending_acks: List[asyncio.Future] = []
+        self._consumers: Dict[str, ConsumerInfo] = {}
+
     @property
     def name(self) -> str:
         return self._name
@@ -52,6 +63,13 @@ class Agent(ABC):
     def peers(self) -> List[AgentInfo]:
         return self._peers
 
+    @property
+    def stream_name(self) -> str:
+        return f"acp_agent_messages_{self._name}"
+
+    def consumer_name(self, session_id: str) -> str:
+        return f"{self._name}_{session_id}"
+
     def message_key(self, agent_info: AgentInfo, session_id: str = "*") -> str:
         return f"acp.agent.{agent_info.name}.message.{session_id}"
 
@@ -63,13 +81,20 @@ class Agent(ABC):
     ##
 
     async def _message_handler(self, msg: Msg):
-        await msg.ack()
+        # Wait for all pending acks to complete
+        await asyncio.gather(*self._pending_acks)
+        self._pending_acks = []
+        await msg.in_progress()
 
         message = TextMessage.model_validate_json(msg.data)
+        print(f"Received message from {message.source.name}")
         session = await self._session_store.get_session(
             self.info.name, message.session_id
         )
         if session is None:
+            print(f"Session {message.session_id} not found")
+            # await msg.nak()
+            await msg.term()
             return
 
         updated_session = session.append(message)
@@ -77,6 +102,7 @@ class Agent(ABC):
             self.info.name, message.session_id, updated_session
         )
         await self.on_message(updated_session)
+        await msg.ack()
 
     @abstractmethod
     async def on_message(self, session: ConversationSession):
@@ -106,6 +132,7 @@ class Agent(ABC):
         await self._session_store.set_session(
             self.info.name, message.session_id, session.append(message)
         )
+        print(f"Sent message to {to.name}")
 
     ##
     ## Session API
@@ -116,6 +143,7 @@ class Agent(ABC):
         logger.info(f"Handshake request: {handshake_request}")
 
         should_accept, reason = await self._session_policy(handshake_request.from_agent)
+        print(f"Handshake response: {should_accept} {reason}")
         if should_accept:
             session = ConversationSession(
                 session_id=handshake_request.session_id,
@@ -124,29 +152,32 @@ class Agent(ABC):
             )
             await self._session_store.set_session(
                 self.info.name,
-                handshake_request.session_id,
+                session.session_id,
                 session,
             )
-            await msg.respond(
-                HandshakeResponse(
-                    session_id=handshake_request.session_id,
-                    metadata=handshake_request.metadata,
-                    accept=True,
-                )
-                .model_dump_json()
-                .encode(),
+            consumer_info = await self._js.add_consumer(
+                stream=self.stream_name,
+                name=self._name,
+                durable_name=self._name,
+                filter_subject=self.message_key(self.info, session.session_id),
+                deliver_subject=self._nc.new_inbox(),
+                max_ack_pending=1,
+                max_waiting=None,
             )
-        else:
-            await msg.respond(
-                HandshakeResponse(
-                    session_id=handshake_request.session_id,
-                    metadata=handshake_request.metadata,
-                    accept=False,
-                    reason=reason,
-                )
-                .model_dump_json()
-                .encode(),
+            self._consumers[session.session_id] = consumer_info
+
+        # Respond to the handshake request
+        await msg.respond(
+            HandshakeResponse(
+                session_id=handshake_request.session_id,
+                metadata=handshake_request.metadata,
+                accept=should_accept,
+                reason=reason,
             )
+            .model_dump_json()
+            .encode(),
+        )
+        await msg.ack()
 
     async def establish_session(
         self, peer: AgentInfo, session_id: str | None = None, metadata: dict = {}
@@ -171,7 +202,6 @@ class Agent(ABC):
             self.handshake_key(peer),
             handshake_request.model_dump_json().encode(),
         )
-        logger.info(f"Handshake response: {resp.data}")
 
         handshake_response = HandshakeResponse.model_validate_json(resp.data)
         if not handshake_response.accept:
@@ -186,10 +216,17 @@ class Agent(ABC):
             updated_at=datetime.now().isoformat(),
             metadata=metadata or {},
         )
-
-        # Save the updated session
         await self._session_store.set_session(self.info.name, session_id, session)
-        logger.info(f"Created session: {session}")
+        consumer_info = await self._js.add_consumer(
+            stream=self.stream_name,
+            name=self._name,
+            durable_name=self._name,
+            filter_subject=self.message_key(self.info, session.session_id),
+            deliver_subject=self._nc.new_inbox(),
+            max_ack_pending=1,
+            max_waiting=None,
+        )
+        self._consumers[session_id] = consumer_info
         return session_id
 
     ##
@@ -197,48 +234,68 @@ class Agent(ABC):
     ##
 
     async def connect(self):
-        # Setup clients
+        if self._nc is not None:
+            return
+
         self._nc = await nats.connect(self._server_url)
         self._js = self._nc.jetstream(timeout=None)
 
-        # Setup resources
         try:
             await self._js.add_stream(
-                name=f"acp_agent_messages_{self._name}",
+                name=self.stream_name,
                 subjects=[self.message_key(self.info, "*")],
             )
         except Exception:
-            pass
-
-        self._msg_sub = await self._js.subscribe(
-            self.message_key(self.info, "*"),
-            # durable=self._name,
-        )
-        self._handshake_sub = await self._nc.subscribe(
-            self.handshake_key(self.info),
-            # durable=self._name,
-        )
+            await self._js.update_stream(
+                name=self.stream_name,
+                subjects=[self.message_key(self.info, "*")],
+            )
 
     async def run(self, peers: List[AgentInfo] = []):
-        if self._nc is None or self._js is None:
-            await self.connect()
-
-        # Register peers
+        await self.connect()
         for peer in peers:
             await self.register_peer(peer)
 
-        # Run infinitely by waiting forever
         async def _process_messages():
-            async for msg in self._msg_sub.messages:
-                await self._message_handler(msg)
+            msg_subs: List[JetStreamContext.PushSubscription] = []
+            while True:
+                if len(self._consumers) != len(msg_subs):
+                    logger.debug(
+                        "A new consumer has been created. Re-subscribing to messages."
+                    )
+                    await asyncio.gather(*[sub.unsubscribe for sub in msg_subs])
+                    msg_subs = await asyncio.gather(
+                        *[
+                            self._js.subscribe_bind(
+                                stream=self.stream_name,
+                                config=info.config,
+                                consumer=self.consumer_name(session_id),
+                            )
+                            for session_id, info in self._consumers.items()
+                        ]
+                    )
+
+                for sub in msg_subs:
+                    try:
+                        msg = await sub.next_msg()
+                        await self._message_handler(msg)
+                    except asyncio.TimeoutError:
+                        continue
+
+                await asyncio.sleep(1)
 
         async def _process_handshakes():
-            async for msg in self._handshake_sub.messages:
-                await self._handshake_handler(msg)
+            handshake_sub = await self._nc.subscribe(
+                self.handshake_key(self.info),
+            )
 
-        # Create tasks for both subscriptions
-        msg_task = asyncio.create_task(_process_messages())
-        handshake_task = asyncio.create_task(_process_handshakes())
+            while True:
+                try:
+                    msg = await handshake_sub.next_msg()
+                    await self._handshake_handler(msg)
+                except asyncio.TimeoutError:
+                    await asyncio.sleep(1)
+                    continue
 
         # Wait for both tasks to complete (they won't unless there's an error)
-        await asyncio.gather(msg_task, handshake_task)
+        await asyncio.gather(_process_messages(), _process_handshakes())
