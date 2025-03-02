@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from openai.types.chat import ChatCompletionToolParam
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import x25519
+from nats.js.api import ConsumerInfo
 
 
 class KeyPair(BaseModel):
@@ -138,6 +139,12 @@ class ConversationSession(BaseModel):
 
     session_id: str
     """Unique identifier for this conversation session."""
+
+    me: AgentInfo
+    """The agent that is participating in this conversation."""
+
+    consumer_info: ConsumerInfo
+    """The consumer info for this conversation."""
 
     my_keypair: KeyPair
     """The keypair for this conversation."""

@@ -1,11 +1,10 @@
-from typing import List, Dict
+from typing import List
 
 import nats
 import nats.errors
 import nats.js
 from nats.aio.client import Msg, Client as NatsClient
 from nats.js.client import JetStreamContext
-from nats.js.api import ConsumerInfo
 from abc import abstractmethod, ABC
 import uuid
 import asyncio
@@ -47,7 +46,6 @@ class Agent(ABC):
 
         self._nc: NatsClient = None  # type: ignore
         self._js: JetStreamContext = None  # type: ignore
-        self._consumers: Dict[str, ConsumerInfo] = {}
 
     @property
     def name(self) -> str:
@@ -161,8 +159,21 @@ class Agent(ABC):
         if should_accept:
             # Create a new session
             keypair = KeyPair.generate()
+            consumer_info = await self._js.add_consumer(
+                stream=self.stream_name,
+                name=self._name,
+                durable_name=self._name,
+                filter_subject=self.message_key(
+                    self.info, handshake_request.session_id
+                ),
+                deliver_subject=self._nc.new_inbox(),
+                max_ack_pending=1,
+                max_waiting=None,
+            )
             session = ConversationSession(
+                me=self.info,
                 session_id=handshake_request.session_id,
+                consumer_info=consumer_info,
                 original_user=handshake_request.from_agent,
                 participants=[handshake_request.from_agent, self.info],
                 my_keypair=keypair,
@@ -183,16 +194,6 @@ class Agent(ABC):
                 .model_dump_json()
                 .encode(),
             )
-            consumer_info = await self._js.add_consumer(
-                stream=self.stream_name,
-                name=self._name,
-                durable_name=self._name,
-                filter_subject=self.message_key(self.info, session.session_id),
-                deliver_subject=self._nc.new_inbox(),
-                max_ack_pending=1,
-                max_waiting=None,
-            )
-            self._consumers[session.session_id] = consumer_info
 
         # Respond to the handshake request
         await msg.respond(
@@ -244,8 +245,19 @@ class Agent(ABC):
             raise Exception("Handshake rejected")
 
         # Create a new session
+        consumer_info = await self._js.add_consumer(
+            stream=self.stream_name,
+            name=self._name,
+            durable_name=self._name,
+            filter_subject=self.message_key(self.info, session_id),
+            deliver_subject=self._nc.new_inbox(),
+            max_ack_pending=1,
+            max_waiting=None,
+        )
         session = ConversationSession(
+            me=self.info,
             session_id=session_id,
+            consumer_info=consumer_info,
             my_keypair=keypair,
             peer_public_key=handshake_response.public_key,
             original_user=peer,
@@ -255,16 +267,7 @@ class Agent(ABC):
             metadata=metadata or {},
         )
         await self._session_store.set_session(self.info.name, session_id, session)
-        consumer_info = await self._js.add_consumer(
-            stream=self.stream_name,
-            name=self._name,
-            durable_name=self._name,
-            filter_subject=self.message_key(self.info, session.session_id),
-            deliver_subject=self._nc.new_inbox(),
-            max_ack_pending=1,
-            max_waiting=None,
-        )
-        self._consumers[session_id] = consumer_info
+
         return session_id
 
     ##
@@ -297,7 +300,8 @@ class Agent(ABC):
         async def _process_messages():
             msg_subs: List[JetStreamContext.PushSubscription] = []
             while True:
-                if len(self._consumers) != len(msg_subs):
+                sessions = await self._session_store.active_sessions(self.info.name)
+                if len(sessions) != len(msg_subs):
                     logger.debug(
                         "A new consumer has been created. Re-subscribing to messages."
                     )

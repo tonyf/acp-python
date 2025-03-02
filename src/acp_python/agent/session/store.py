@@ -1,5 +1,4 @@
-from typing import Protocol, Optional
-from typing import Dict
+from typing import Protocol, Optional, List, Dict
 from ..types import ConversationSession
 
 
@@ -13,6 +12,12 @@ class SessionStore(Protocol):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
+
+    async def active_sessions(self, actor_id: str) -> List[ConversationSession]:
+        """
+        Retrieve all active sessions for an actor.
+        """
+        ...
 
     async def get_session(
         self, actor_id: str, session_id: str
@@ -59,6 +64,10 @@ class InMemorySessionStore(SessionStore):
 
     def session_key(self, actor_id: str, session_id: str) -> str:
         return f"acp.agent.{actor_id}.session.{session_id}"
+
+    async def active_sessions(self, actor_id: str) -> List[ConversationSession]:
+        all_sessions = list(self._sessions.values())
+        return [session for session in all_sessions if session.me.name == actor_id]
 
     async def get_session(
         self, actor_id: str, session_id: str
