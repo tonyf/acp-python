@@ -1,4 +1,5 @@
-from typing import Protocol, Optional, List, Dict
+from typing import Dict, List, Optional, Protocol
+
 from ..types import ConversationSession
 
 

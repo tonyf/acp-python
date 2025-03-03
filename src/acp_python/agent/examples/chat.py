@@ -1,8 +1,10 @@
-from ..base import Agent, TextMessage, ConversationSession, AgentInfo
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 import os
 from typing import cast
+
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+
+from ..base import Agent, AgentInfo, ConversationSession, TextMessage
 
 
 class ChatAgent(Agent):
@@ -85,10 +87,12 @@ class ChatAgent(Agent):
 
 
 if __name__ == "__main__":
+    import asyncio
+
     from typer import Typer
+
     from .examples.chat import ChatAgent
     from .examples.user import UserInterface
-    import asyncio
 
     app = Typer()
 

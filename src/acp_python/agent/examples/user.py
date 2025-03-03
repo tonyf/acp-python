@@ -1,11 +1,13 @@
-from ..types import TextMessage, AgentInfo, ConversationSession
-from ..base import Agent
-from typer import prompt
-from rich.console import Console
-import uuid
-import logging
 import asyncio
-from typing import List
+import logging
+import uuid
+from typing import List, Dict, Any
+
+from rich.console import Console
+from typer import prompt
+
+from ..base import Agent
+from ..types import AgentInfo, ConversationSession, TextMessage
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,6 @@ class UserInterface(Agent):
         response = prompt("> ")
 
         if response.lower() == "exit":
-            # Signal to exit
             raise KeyboardInterrupt()
 
         if response.lower() == "pdb":
@@ -40,49 +41,60 @@ class UserInterface(Agent):
             pdb.set_trace()
             response = prompt("> ")
 
-        # Keep the same session_id in the response
         await self.send(
             last_message.source,
             TextMessage(
                 content=response,
                 source=self.info,
-                session_id=session.session_id,  # Preserve session ID
+                session_id=session.session_id,
             ),
         )
 
-    async def run(self, peers: List[AgentInfo] = []):
-        assert len(peers) == 1, "User interface must have exactly one peer"
-        peer = peers[0]
-
-        loop = asyncio.create_task(super().run(peers))
-
-        while self._nc is None:
-            await asyncio.sleep(1)
-
-        session_id = await self.establish_session(peer, self.session_id)
-        assert session_id == self.session_id, "Session ID mismatch"
-        console.print(f"Starting new conversation (Session ID: {session_id})")
-        console.print("Type 'exit' to quit")
-        user_input = console.input("> ")
-
-        if user_input.lower() == "exit":
-            raise KeyboardInterrupt()
-
-        await self.send(
-            peer,
-            TextMessage(
-                content=user_input,
-                source=self.info,
-                session_id=self.session_id,
-            ),
+    async def run(self):
+        assert len(self._peers) == 1, (
+            f"User interface must have exactly one peer: Got {self._peers}"
         )
+        peer = self._peers[0]
 
-        await loop
+        # Start the base agent's message processing
+        agent_task = asyncio.create_task(super().run())
+
+        try:
+            # Establish session and send initial message
+            await asyncio.sleep(1)  # wait for other agents to connect
+            session_id = await self.establish_session(peer, self.session_id)
+            console.print(f"Starting new conversation (Session ID: {session_id})")
+
+            # Send initial message to start the conversation
+            user_input = console.input("> ")
+            if user_input.lower() == "exit":
+                raise KeyboardInterrupt()
+
+            await self.send(
+                peer,
+                TextMessage(
+                    content=user_input,
+                    source=self.info,
+                    session_id=self.session_id,
+                ),
+            )
+
+            # Wait for the agent to complete
+            await agent_task
+
+        finally:
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":
     from typer import Typer
+
     from .chat import ChatAgent
+    from ..transport.nats import NatsTransport
 
     app = Typer()
 
@@ -96,35 +108,40 @@ if __name__ == "__main__":
     ):
         async def main():
             # Create agents
+            transport = NatsTransport(server_url=nats_url)
+            await transport.connect()
             chat = ChatAgent(
                 name="assistant-2",
                 model=model,
                 description="A helpful assistant that can answer questions and help with tasks.",
                 openai_kwargs={"api_key": api_key, "base_url": base_url},
-                server_url=nats_url,
+                transport=transport,
             )
-            pirate = ChatAgent(
-                name="pirate-riddler-2",
-                model=model,
-                description="A pirate that creates riddles",
-                openai_kwargs={"api_key": api_key, "base_url": base_url},
-                server_url=nats_url,
-            )
+            # pirate = ChatAgent(
+            #     name="pirate-riddler-2",
+            #     model=model,
+            #     description="A pirate that creates riddles",
+            #     openai_kwargs={"api_key": api_key, "base_url": base_url},
+            #     transport=transport,
+            # )
             user = UserInterface(
                 name="tony-2",
                 session_id=session_id,
                 description="A user interface for the chat agent.",
-                peers=[chat.info],
-                server_url=nats_url,
+                transport=transport,
             )
+
+            # await chat.register_peer(pirate.info)
+            # await pirate.register_peer(chat.info)
+            await user.register_peer(chat.info)
 
             # Run all agents concurrently in the background
             await asyncio.gather(
-                user.run([chat.info]),
-                chat.run([pirate.info]),
-                pirate.run([chat.info]),
+                chat.run(),
+                # pirate.run(),
+                user.run(),
             )
 
         asyncio.run(main())
 
-        app()
+    app()

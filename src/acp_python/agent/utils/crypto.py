@@ -1,6 +1,8 @@
-from ..types import EncryptedMessage, TextMessage
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from ..types import EncryptedMessage, TextMessage
 
 
 def encrypt(msg: TextMessage, shared_secret: bytes) -> "EncryptedMessage":

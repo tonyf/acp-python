@@ -1,4 +1,5 @@
-from typing import Protocol, Tuple, List, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Protocol, Tuple
+
 import aiohttp
 
 if TYPE_CHECKING:

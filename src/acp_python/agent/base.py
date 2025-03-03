@@ -1,27 +1,23 @@
-from typing import List
-
-import nats
-import nats.errors
-import nats.js
-from nats.aio.client import Msg, Client as NatsClient
-from nats.js.client import JetStreamContext
-from abc import abstractmethod, ABC
-import uuid
 import asyncio
+import logging
+import uuid
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import AsyncGenerator, List
+
+from .exceptions import SessionNotFound
+from .session.policy import AllowAllPolicy, SessionPolicy
+from .session.store import SessionStore, default_session_store
+from .transport.base import Transport
 from .types import (
     AgentInfo,
     ConversationSession,
-    TextMessage,
-    EncryptedMessage,
     HandshakeRequest,
     HandshakeResponse,
     KeyPair,
+    TextMessage,
 )
 from .utils.crypto import decrypt, encrypt
-from .session.store import SessionStore, default_session_store
-from .session.policy import SessionPolicy, AllowAllPolicy
-from datetime import datetime
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -31,21 +27,19 @@ class Agent(ABC):
         self,
         name: str,
         description: str,
-        peers: List[AgentInfo] = [],
-        server_url: str = "nats://localhost:4222",
+        transport: Transport,
+        peers: List[AgentInfo] | None = None,
         session_store: SessionStore = default_session_store,
         session_policy: SessionPolicy = AllowAllPolicy(),
     ):
         self._name = name
         self._description = description
-        self._server_url = server_url
-        self._peers = peers
+        self._transport = transport
+        self._peers = peers or []
 
         self._session_store = session_store
         self._session_policy = session_policy
-
-        self._nc: NatsClient = None  # type: ignore
-        self._js: JetStreamContext = None  # type: ignore
+        self._sessions_updated = asyncio.Event()
 
     @property
     def name(self) -> str:
@@ -79,47 +73,53 @@ class Agent(ABC):
     ## Message API
     ##
 
-    async def _message_handler(self, msg: Msg):
-        await msg.in_progress()
+    async def messages(self) -> AsyncGenerator[ConversationSession, None]:
+        while True:
+            self._sessions_updated.clear()
+            sessions = await self._session_store.active_sessions(self.info.name)
+            logger.debug(f"Listening for messages from {len(sessions)} sessions")
 
-        encrypted_message = EncryptedMessage.model_validate_json(msg.data.decode())
-        session = await self._session_store.get_session(
-            self.info.name, encrypted_message.session_id
-        )
-        if session is None:
-            logger.warning(f"Session {encrypted_message.session_id} not found")
-            await msg.term()
-            return
+            async for encrypted_message in self._transport.messages(
+                self.info, sessions
+            ):
+                # Check if sessions were updated
+                if self._sessions_updated.is_set():
+                    logger.debug("Sessions updated, breaking")
+                    break
 
-        try:
-            # Decrypt the message and append it to the session
-            decrypted_message = decrypt(
-                encrypted_message,
-                session.my_keypair.private_key.exchange(session.peer_public_key),
-            )
-            updated_session = session.append(decrypted_message)
+                session = await self._session_store.get_session(
+                    self.info.name, encrypted_message.session_id
+                )
+                if session is None:
+                    logger.debug(f"Session {encrypted_message.session_id} not found")
+                    # raise SessionNotFound(encrypted_message.session_id)
+                    continue
 
-            await self._session_store.set_session(
-                self.info.name, decrypted_message.session_id, updated_session
-            )
-            await self.on_message(updated_session)
-            await msg.ack()
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            await msg.nak()
-            await self._session_store.set_session(
-                self.info.name, decrypted_message.session_id, session
-            )
+                # Decrypt the message
+                decrypted_message = decrypt(
+                    encrypted_message,
+                    session.my_keypair.private_key.exchange(session.peer_public_key),
+                )
 
-    @abstractmethod
-    async def on_message(self, session: ConversationSession):
-        pass
+                # Append the message to the session
+                updated_session = session.append(decrypted_message)
+                await self._session_store.set_session(
+                    self.info.name, decrypted_message.session_id, updated_session
+                )
+
+                try:
+                    yield updated_session
+                except Exception as e:
+                    # Restore the session to the previous state if the message handler raises an error
+                    await self._session_store.set_session(
+                        self.info.name, decrypted_message.session_id, session
+                    )
+                    raise e
 
     async def register_peer(self, *peers: AgentInfo):
         self._peers.extend(peers)
 
     async def send(self, to: AgentInfo, message: TextMessage):
-        # Get the session
         session = await self._session_store.get_session(
             self.info.name, message.session_id
         )
@@ -129,84 +129,75 @@ class Agent(ABC):
                 "Make sure to establish a session with the peer first."
             )
 
+        # Encrypt the message and send it to the peer
         encrypted_message = encrypt(
             message,
             session.my_keypair.private_key.exchange(session.peer_public_key),
         )
 
-        # Send the message to the peer
-        await self._js.publish(
-            self.message_key(to, message.session_id),
-            encrypted_message.model_dump_json().encode(),
+        updated_session = session.append(message)
+        await self._session_store.set_session(
+            self.info.name, message.session_id, updated_session
         )
 
-        # Update the session with the new message
-        await self._session_store.set_session(
-            self.info.name, message.session_id, session.append(message)
-        )
-        print(f"Sent message to {to.name}")
+        try:
+            await self._transport.send(to, encrypted_message)
+        except Exception as e:
+            # Restore the session to the previous state if the message send fails
+            await self._session_store.set_session(
+                self.info.name, message.session_id, session
+            )
+            raise e
 
     ##
     ## Session API
     ##
 
-    async def _handshake_handler(self, msg: Msg):
-        handshake_request = HandshakeRequest.model_validate_json(msg.data)
-        logger.info(f"Handshake request: {handshake_request}")
-
-        should_accept, reason = await self._session_policy(handshake_request.from_agent)
-        print(f"Handshake response: {should_accept} {reason}")
+    async def on_handshake(self, request: HandshakeRequest):
+        should_accept, reason = await self._session_policy(request.from_agent)
         if should_accept:
             # Create a new session
             keypair = KeyPair.generate()
-            consumer_info = await self._js.add_consumer(
-                stream=self.stream_name,
-                name=self._name,
-                durable_name=self._name,
-                filter_subject=self.message_key(
-                    self.info, handshake_request.session_id
-                ),
-                deliver_subject=self._nc.new_inbox(),
-                max_ack_pending=1,
-                max_waiting=None,
-            )
-            session = ConversationSession(
-                me=self.info,
-                session_id=handshake_request.session_id,
-                consumer_info=consumer_info,
-                original_user=handshake_request.from_agent,
-                participants=[handshake_request.from_agent, self.info],
-                my_keypair=keypair,
-                peer_public_key=handshake_request.public_key,
+            metadata = await self._transport.register_session(
+                self.info, request.session_id
             )
             await self._session_store.set_session(
                 self.info.name,
-                session.session_id,
-                session,
+                request.session_id,
+                ConversationSession(
+                    me=self.info,
+                    session_id=request.session_id,
+                    transport_metadata=metadata,
+                    original_user=request.from_agent,
+                    participants=[request.from_agent, self.info],
+                    my_keypair=keypair,
+                    peer_public_key=request.public_key,
+                ),
             )
-            await msg.respond(
+            self._sessions_updated.set()
+            logger.debug(
+                f"[Receiver] Handshake accepted, created session: {request.session_id}"
+            )
+            await self._transport.handshake_reply(
+                request.from_agent,
                 HandshakeResponse(
-                    session_id=handshake_request.session_id,
-                    metadata=handshake_request.metadata,
+                    session_id=request.session_id,
+                    metadata=request.metadata,
                     accept=True,
                     public_key=keypair.public_key,
-                )
-                .model_dump_json()
-                .encode(),
+                ),
             )
 
-        # Respond to the handshake request
-        await msg.respond(
-            HandshakeResponse(
-                session_id=handshake_request.session_id,
-                metadata=handshake_request.metadata,
-                accept=should_accept,
-                reason=reason,
+        else:
+            await self._transport.handshake_reply(
+                request.from_agent,
+                HandshakeResponse(
+                    session_id=request.session_id,
+                    metadata=request.metadata,
+                    accept=False,
+                    reason=reason,
+                ),
             )
-            .model_dump_json()
-            .encode(),
-        )
-        await msg.ack()
 
     async def establish_session(
         self, peer: AgentInfo, session_id: str | None = None, metadata: dict = {}
@@ -215,129 +206,72 @@ class Agent(ABC):
         Establish a new session with another agent or user.
         Returns the session_id that can be used for future communications.
         """
+        # Check if the session already exists
         logger.info(f"Establishing session with {peer.name}")
         session_id = session_id or str(uuid.uuid4())
-        if (
-            session := await self._session_store.get_session(self.info.name, session_id)
-        ) is not None:
+        existing_session = await self._session_store.get_session(
+            self.info.name, session_id
+        )
+        if existing_session is not None:
             raise Exception(f"Session {session_id} already exists")
 
         # Generate a keypair
         keypair = KeyPair.generate()
-        handshake_request = (
+        handshake_response = await self._transport.handshake_request(
+            peer,
             HandshakeRequest(
                 from_agent=self.info,
                 session_id=session_id,
                 metadata=metadata or {},
                 public_key=keypair.public_key,
-            )
-            .model_dump_json()
-            .encode()
+            ),
         )
-        resp = await self._nc.request(
-            self.handshake_key(peer),
-            handshake_request,
-            timeout=5,
-        )
-
-        handshake_response = HandshakeResponse.model_validate_json(resp.data)
         if not handshake_response.accept or handshake_response.public_key is None:
             raise Exception("Handshake rejected")
 
         # Create a new session
-        consumer_info = await self._js.add_consumer(
-            stream=self.stream_name,
-            name=self._name,
-            durable_name=self._name,
-            filter_subject=self.message_key(self.info, session_id),
-            deliver_subject=self._nc.new_inbox(),
-            max_ack_pending=1,
-            max_waiting=None,
+        metadata = await self._transport.register_session(self.info, session_id)
+        await self._session_store.set_session(
+            self.info.name,
+            session_id,
+            ConversationSession(
+                me=self.info,
+                session_id=session_id,
+                transport_metadata=metadata,
+                my_keypair=keypair,
+                peer_public_key=handshake_response.public_key,
+                original_user=peer,
+                participants=[peer, self.info],
+                created_at=datetime.now().isoformat(),
+                updated_at=datetime.now().isoformat(),
+            ),
         )
-        session = ConversationSession(
-            me=self.info,
-            session_id=session_id,
-            consumer_info=consumer_info,
-            my_keypair=keypair,
-            peer_public_key=handshake_response.public_key,
-            original_user=peer,
-            participants=[peer, self.info],
-            created_at=datetime.now().isoformat(),
-            updated_at=datetime.now().isoformat(),
-            metadata=metadata or {},
-        )
-        await self._session_store.set_session(self.info.name, session_id, session)
-
+        logger.debug(f"[Sender] Handshake accepted, created session: {session_id}")
+        self._sessions_updated.set()
         return session_id
 
     ##
     ## Lifecycle API
     ##
 
-    async def connect(self):
-        if self._nc is not None:
-            return
+    async def run_handshakes(self):
+        async for handshake in self._transport.handshakes(self.info):
+            await self.on_handshake(handshake)
 
-        self._nc = await nats.connect(self._server_url)
-        self._js = self._nc.jetstream(timeout=None)
+    @abstractmethod
+    async def on_message(self, session: ConversationSession):
+        pass
+
+    async def run(self):
+        handshake_task = asyncio.create_task(self.run_handshakes())
 
         try:
-            await self._js.add_stream(
-                name=self.stream_name,
-                subjects=[self.message_key(self.info, "*")],
-            )
-        except Exception:
-            await self._js.update_stream(
-                name=self.stream_name,
-                subjects=[self.message_key(self.info, "*")],
-            )
-
-    async def run(self, peers: List[AgentInfo] = []):
-        await self.connect()
-        for peer in peers:
-            await self.register_peer(peer)
-
-        async def _process_messages():
-            msg_subs: List[JetStreamContext.PushSubscription] = []
-            while True:
-                sessions = await self._session_store.active_sessions(self.info.name)
-                if len(sessions) != len(msg_subs):
-                    logger.debug(
-                        "A new consumer has been created. Re-subscribing to messages."
-                    )
-                    await asyncio.gather(*[sub.unsubscribe for sub in msg_subs])
-                    msg_subs = await asyncio.gather(
-                        *[
-                            self._js.subscribe_bind(
-                                stream=self.stream_name,
-                                config=info.config,
-                                consumer=self.consumer_name(session_id),
-                            )
-                            for session_id, info in self._consumers.items()
-                        ]
-                    )
-
-                for sub in msg_subs:
-                    try:
-                        msg = await sub.next_msg()
-                        await self._message_handler(msg)
-                    except asyncio.TimeoutError:
-                        continue
-
-                await asyncio.sleep(1)
-
-        async def _process_handshakes():
-            handshake_sub = await self._nc.subscribe(
-                self.handshake_key(self.info),
-            )
-
-            while True:
-                try:
-                    msg = await handshake_sub.next_msg()
-                    await self._handshake_handler(msg)
-                except asyncio.TimeoutError:
-                    await asyncio.sleep(1)
-                    continue
-
-        # Wait for both tasks to complete (they won't unless there's an error)
-        await asyncio.gather(_process_messages(), _process_handshakes())
+            async for session in self.messages():
+                await self.on_message(session)
+        finally:
+            # Ensure handshake task is cleaned up
+            handshake_task.cancel()
+            try:
+                await handshake_task
+            except asyncio.CancelledError:
+                pass

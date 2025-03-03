@@ -1,10 +1,10 @@
-from typing import Dict, List, Literal
 from abc import ABC
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
-from openai.types.chat import ChatCompletionToolParam
 from datetime import datetime
+from typing import Any, Dict, List, Literal
+import json
 from cryptography.hazmat.primitives.asymmetric import x25519
-from nats.js.api import ConsumerInfo
+from openai.types.chat import ChatCompletionToolParam
+from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 
 class KeyPair(BaseModel):
@@ -143,7 +143,7 @@ class ConversationSession(BaseModel):
     me: AgentInfo
     """The agent that is participating in this conversation."""
 
-    consumer_info: ConsumerInfo
+    transport_metadata: Dict[str, Any]
     """The consumer info for this conversation."""
 
     my_keypair: KeyPair
