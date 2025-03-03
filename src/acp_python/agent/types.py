@@ -134,7 +134,7 @@ class MessageHistory(BaseModel):
     """The messages in the history."""
 
 
-class ConversationSession(BaseModel):
+class Session(BaseModel):
     """A session representing a conversation between agents and users."""
 
     session_id: str
@@ -185,7 +185,7 @@ class ConversationSession(BaseModel):
             return x25519.X25519PublicKey.from_public_bytes(bytes.fromhex(value))
         return value
 
-    def append(self, *messages: TextMessage) -> "ConversationSession":
+    def append(self, *messages: TextMessage) -> "Session":
         copy = self.model_copy()
         copy.messages.extend(messages)
         copy.updated_at = datetime.now().isoformat()

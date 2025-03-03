@@ -7,7 +7,7 @@ from rich.console import Console
 from typer import prompt
 
 from ..base import Agent
-from ..types import AgentInfo, ConversationSession, TextMessage
+from ..types import AgentInfo, Session, TextMessage
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class UserInterface(Agent):
     def message_key(self, agent_info: AgentInfo, _: str = "*") -> str:
         return super().message_key(agent_info, self.session_id)
 
-    async def on_message(self, session: ConversationSession):
+    async def on_message(self, session: Session):
         last_message = session.messages[-1]
         console.print(f"[{last_message.source}] {last_message.content}")
         response = prompt("> ")

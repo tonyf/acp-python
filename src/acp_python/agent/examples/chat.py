@@ -4,7 +4,7 @@ from typing import cast
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
-from ..base import Agent, AgentInfo, ConversationSession, TextMessage
+from ..base import Agent, AgentInfo, Session, TextMessage
 
 
 class ChatAgent(Agent):
@@ -28,7 +28,7 @@ class ChatAgent(Agent):
         self.temperature = temperature
 
     async def delegate_to_agent(
-        self, target_agent: AgentInfo, content: str, session: ConversationSession
+        self, target_agent: AgentInfo, content: str, session: Session
     ) -> str:
         """
         Delegate a task to another agent.
@@ -38,7 +38,7 @@ class ChatAgent(Agent):
         raise NotImplementedError("Delegation not implemented")
 
     async def assemble_conversation(
-        self, session: ConversationSession
+        self, session: Session
     ) -> list[ChatCompletionMessageParam]:
         """
         Get the conversation history in openai format
@@ -62,7 +62,7 @@ class ChatAgent(Agent):
             model=self.model, messages=messages, temperature=self.temperature
         )
 
-    async def on_message(self, session: ConversationSession):
+    async def on_message(self, session: Session):
         # TODO:
         # if you call a tool and create a new conversation,
         # that conversation should have the context of the original conversation

@@ -2,7 +2,7 @@ from typing import Any, AsyncGenerator, Dict, List, Protocol
 
 from ..types import (
     AgentInfo,
-    ConversationSession,
+    Session,
     EncryptedMessage,
     HandshakeRequest,
     HandshakeResponse,
@@ -31,5 +31,5 @@ class Transport(Protocol):
     ) -> AsyncGenerator[HandshakeRequest, None]: ...
 
     async def messages(
-        self, agent: AgentInfo, sessions: List[ConversationSession]
+        self, agent: AgentInfo, sessions: List[Session]
     ) -> AsyncGenerator[EncryptedMessage, None]: ...

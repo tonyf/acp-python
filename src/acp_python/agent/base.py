@@ -11,7 +11,7 @@ from .session.store import SessionStore, default_session_store
 from .transport.base import Transport
 from .types import (
     AgentInfo,
-    ConversationSession,
+    Session,
     HandshakeRequest,
     HandshakeResponse,
     KeyPair,
@@ -73,7 +73,7 @@ class Agent(ABC):
     ## Message API
     ##
 
-    async def messages(self) -> AsyncGenerator[ConversationSession, None]:
+    async def messages(self) -> AsyncGenerator[Session, None]:
         while True:
             self._sessions_updated.clear()
             sessions = await self._session_store.active_sessions(self.info.name)
@@ -164,7 +164,7 @@ class Agent(ABC):
             await self._session_store.set_session(
                 self.info.name,
                 request.session_id,
-                ConversationSession(
+                Session(
                     me=self.info,
                     session_id=request.session_id,
                     transport_metadata=metadata,
@@ -234,7 +234,7 @@ class Agent(ABC):
         await self._session_store.set_session(
             self.info.name,
             session_id,
-            ConversationSession(
+            Session(
                 me=self.info,
                 session_id=session_id,
                 transport_metadata=metadata,
@@ -259,7 +259,7 @@ class Agent(ABC):
             await self.on_handshake(handshake)
 
     @abstractmethod
-    async def on_message(self, session: ConversationSession):
+    async def on_message(self, session: Session):
         pass
 
     async def run(self):

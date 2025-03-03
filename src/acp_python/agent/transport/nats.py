@@ -13,7 +13,7 @@ from nats.js.client import JetStreamContext
 from ..exceptions import SessionNotFound
 from ..types import (
     AgentInfo,
-    ConversationSession,
+    Session,
     EncryptedMessage,
     HandshakeRequest,
     HandshakeResponse,
@@ -109,7 +109,7 @@ class NatsTransport(Transport):
                 await msg.nak()
 
     async def messages(
-        self, agent: AgentInfo, sessions: List[ConversationSession]
+        self, agent: AgentInfo, sessions: List[Session]
     ) -> AsyncGenerator[EncryptedMessage, None]:
         try:
             await self._js.add_stream(
