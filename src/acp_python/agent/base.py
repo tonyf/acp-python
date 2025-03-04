@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import AsyncGenerator, List
 
-from .exceptions import SessionNotFound
 from .session.policy import AllowAllPolicy, SessionPolicy
 from .session.store import SessionStore, default_session_store
 from .transport.base import Transport
@@ -23,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 
 class Agent(ABC):
+    """Base agent class for secure communication between agents.
+
+    Provides core functionality for session management, message encryption/decryption,
+    and peer-to-peer communication. Subclasses must implement on_message().
+
+    Flow:
+    1. Initialize with name, description, and transport
+    2. Establish sessions with peers via handshakes
+    3. Send/receive encrypted messages within sessions
+    4. Process messages via on_message() handler
+    """
+
     def __init__(
         self,
         name: str,
@@ -32,6 +43,16 @@ class Agent(ABC):
         session_store: SessionStore = default_session_store,
         session_policy: SessionPolicy = AllowAllPolicy(),
     ):
+        """Initialize agent with identity and communication components.
+
+        Args:
+            name: Unique identifier for this agent
+            description: Human-readable description
+            transport: Communication layer implementation
+            peers: Optional list of known peers
+            session_store: Storage for session state
+            session_policy: Policy for accepting handshakes
+        """
         self._name = name
         self._description = description
         self._transport = transport
@@ -43,10 +64,12 @@ class Agent(ABC):
 
     @property
     def name(self) -> str:
+        """Get agent's unique name."""
         return self._name
 
     @property
     def info(self) -> AgentInfo:
+        """Get agent's public information."""
         return AgentInfo(
             name=self._name,
             description=self._description,
@@ -54,19 +77,46 @@ class Agent(ABC):
 
     @property
     def peers(self) -> List[AgentInfo]:
+        """Get list of known peers."""
         return self._peers
 
     @property
     def stream_name(self) -> str:
+        """Get stream name for agent's messages."""
         return f"acp_agent_messages_{self._name}"
 
     def consumer_name(self, session_id: str) -> str:
+        """Generate consumer name for a session.
+
+        Args:
+            session_id: Unique session identifier
+
+        Returns:
+            Formatted consumer name
+        """
         return f"{self._name}_{session_id}"
 
     def message_key(self, agent_info: AgentInfo, session_id: str = "*") -> str:
+        """Generate message routing key.
+
+        Args:
+            agent_info: Target agent information
+            session_id: Session identifier or wildcard
+
+        Returns:
+            Formatted message key
+        """
         return f"acp.agent.{agent_info.name}.message.{session_id}"
 
     def handshake_key(self, agent_info: AgentInfo) -> str:
+        """Generate handshake routing key.
+
+        Args:
+            agent_info: Target agent information
+
+        Returns:
+            Formatted handshake key
+        """
         return f"acp.agent.{agent_info.name}.handshake"
 
     ##
@@ -74,6 +124,19 @@ class Agent(ABC):
     ##
 
     async def messages(self) -> AsyncGenerator[Session, None]:
+        """Listen for and process incoming messages across all sessions.
+
+        Yields:
+            Updated sessions containing new messages
+
+        Flow:
+            1. Retrieves active sessions from store
+            2. Listens for encrypted messages via transport
+            3. Decrypts messages using session keys
+            4. Updates session state with new messages
+            5. Yields updated sessions to caller
+            6. Handles errors by restoring previous session state
+        """
         while True:
             self._sessions_updated.clear()
             sessions = await self._session_store.active_sessions(self.info.name)
@@ -117,9 +180,30 @@ class Agent(ABC):
                     raise e
 
     async def register_peer(self, *peers: AgentInfo):
+        """Register one or more peers with this agent.
+
+        Args:
+            peers: Agent information for peers to register
+        """
         self._peers.extend(peers)
 
     async def send(self, to: AgentInfo, message: TextMessage):
+        """Send an encrypted message to a peer.
+
+        Args:
+            to: Recipient agent information
+            message: Text message to send
+
+        Raises:
+            Exception: If session doesn't exist or send fails
+
+        Flow:
+            1. Retrieves session for the message
+            2. Encrypts message using session keys
+            3. Updates local session with the message
+            4. Sends encrypted message via transport
+            5. Handles errors by restoring previous session state
+        """
         session = await self._session_store.get_session(
             self.info.name, message.session_id
         )
@@ -154,6 +238,18 @@ class Agent(ABC):
     ##
 
     async def on_handshake(self, request: HandshakeRequest):
+        """Process incoming handshake request.
+
+        Args:
+            request: Handshake request from peer
+
+        Flow:
+            1. Evaluates request against session policy
+            2. If accepted, creates new session with key exchange
+            3. Registers session with transport
+            4. Stores session in session store
+            5. Sends handshake response to peer
+        """
         should_accept, reason = await self._session_policy(request.from_agent)
         if should_accept:
             # Create a new session
@@ -202,9 +298,25 @@ class Agent(ABC):
     async def establish_session(
         self, peer: AgentInfo, session_id: str | None = None, metadata: dict = {}
     ) -> str:
-        """
-        Establish a new session with another agent or user.
-        Returns the session_id that can be used for future communications.
+        """Establish a new session with another agent.
+
+        Args:
+            peer: Agent to establish session with
+            session_id: Optional custom session ID
+            metadata: Optional session metadata
+
+        Returns:
+            Session ID for the established session
+
+        Raises:
+            Exception: If session already exists or handshake is rejected
+
+        Flow:
+            1. Generates session ID if not provided
+            2. Creates keypair for secure communication
+            3. Sends handshake request to peer
+            4. Registers session with transport
+            5. Creates and stores local session state
         """
         # Check if the session already exists
         logger.info(f"Establishing session with {peer.name}")
@@ -254,16 +366,40 @@ class Agent(ABC):
     ## Lifecycle API
     ##
 
-    async def run_handshakes(self):
+    async def handshakes(self):
+        """Listen for and process incoming handshake requests.
+
+        Continuously monitors transport for handshake requests
+        and processes them via on_handshake().
+        """
         async for handshake in self._transport.handshakes(self.info):
             await self.on_handshake(handshake)
 
     @abstractmethod
     async def on_message(self, session: Session):
+        """Process incoming messages.
+
+        Args:
+            session: Updated session containing new message
+
+        Note:
+            Subclasses must implement this method to handle messages.
+            The most recent message is available as session.messages[-1].
+        """
         pass
 
     async def run(self):
-        handshake_task = asyncio.create_task(self.run_handshakes())
+        """Run the agent's main processing loop.
+
+        Starts handshake listener and message processing loops.
+        Subclasses should call this method to activate the agent.
+
+        Flow:
+            1. Creates task for handshake processing
+            2. Processes incoming messages via on_message()
+            3. Ensures proper cleanup of tasks on exit
+        """
+        handshake_task = asyncio.create_task(self.handshakes())
 
         try:
             async for session in self.messages():
