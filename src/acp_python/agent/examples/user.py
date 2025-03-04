@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from typing import List, Dict, Any
+
 
 from rich.console import Console
 from typer import prompt
@@ -15,19 +15,53 @@ console = Console()
 
 
 class UserInterface(Agent):
+    """
+    A user interface agent that allows human interaction with other agents.
+
+    This agent provides a command-line interface for humans to communicate with
+    other agents in the system. It handles sending messages, displaying responses,
+    and managing the conversation session.
+    """
+
     def __init__(
         self,
         name: str = "user",
         session_id: str | None = None,
         **kwargs,
     ):
+        """
+        Initialize the UserInterface agent.
+
+        Args:
+            name: The name of the user agent.
+            session_id: Optional session ID. If not provided, a random UUID will be generated.
+            **kwargs: Additional arguments to pass to the parent Agent class.
+        """
         super().__init__(name, **kwargs)
         self.session_id = session_id or str(uuid.uuid4())
 
     def message_key(self, agent_info: AgentInfo, _: str = "*") -> str:
+        """
+        Generate a unique key for messages with this agent.
+
+        Args:
+            agent_info: Information about the agent to communicate with.
+            _: Placeholder parameter, not used.
+
+        Returns:
+            A string key for identifying messages with this agent.
+        """
         return super().message_key(agent_info, self.session_id)
 
     async def on_message(self, session: Session):
+        """
+        Handle incoming messages from other agents.
+
+        Displays the message to the user and prompts for a response.
+
+        Args:
+            session: The current conversation session.
+        """
         last_message = session.messages[-1]
         console.print(f"[{last_message.source}] {last_message.content}")
         response = prompt("> ")
@@ -51,6 +85,12 @@ class UserInterface(Agent):
         )
 
     async def run(self):
+        """
+        Run the user interface agent.
+
+        Establishes a session with a peer agent and handles the conversation flow.
+        The agent must have exactly one peer to communicate with.
+        """
         assert len(self._peers) == 1, (
             f"User interface must have exactly one peer: Got {self._peers}"
         )
