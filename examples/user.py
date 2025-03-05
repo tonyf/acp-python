@@ -6,8 +6,8 @@ import uuid
 from rich.console import Console
 from typer import prompt
 
-from ..base import Agent
-from ..types import AgentInfo, Session, TextMessage
+from acp_python.agent import Agent
+from acp_python.types import AgentInfo, Session, TextMessage
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +133,9 @@ class UserInterface(Agent):
 if __name__ == "__main__":
     from typer import Typer
 
+    from acp_python.transport.nats import NatsTransport
+
     from .chat import ChatAgent
-    from ..transport.nats import NatsTransport
 
     app = Typer()
 
