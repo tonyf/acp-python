@@ -92,8 +92,8 @@ if __name__ == "__main__":
 
     from typer import Typer
 
-    from .examples.chat import ChatAgent
-    from .examples.user import UserInterface
+    from acp_python.agents.chat import ChatAgent
+    from acp_python.agents.user import UserInterface
 
     app = Typer()
 
