@@ -4,7 +4,8 @@ from typing import cast
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
-from ..base import Agent, AgentInfo, Session, TextMessage
+from acp_python.agents.base import Agent
+from acp_python.types import AgentInfo, Session, TextMessage
 
 
 class ChatAgent(Agent):

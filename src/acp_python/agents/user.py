@@ -2,11 +2,10 @@ import asyncio
 import logging
 import uuid
 
-
 from rich.console import Console
 from typer import prompt
 
-from acp_python.agent import Agent
+from acp_python.agents.base import Agent
 from acp_python.types import AgentInfo, Session, TextMessage
 
 logger = logging.getLogger(__name__)
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-class UserInterface(Agent):
+class ConsoleUserAgent(Agent):
     """
     A user interface agent that allows human interaction with other agents.
 
@@ -133,9 +132,8 @@ class UserInterface(Agent):
 if __name__ == "__main__":
     from typer import Typer
 
+    from acp_python.agents.chat import ChatAgent
     from acp_python.transport.nats import NatsTransport
-
-    from .chat import ChatAgent
 
     app = Typer()
 
@@ -165,7 +163,7 @@ if __name__ == "__main__":
             #     openai_kwargs={"api_key": api_key, "base_url": base_url},
             #     transport=transport,
             # )
-            user = UserInterface(
+            user = ConsoleUserAgent(
                 name="tony-2",
                 session_id=session_id,
                 description="A user interface for the chat agent.",

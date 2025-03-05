@@ -5,10 +5,10 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import AsyncGenerator, List
 
-from .session.policy import AllowAllPolicy, SessionPolicy
-from .session.store import SessionStore, default_session_store
-from .transport.base import Transport
-from .types import (
+from acp_python.session.policy import AllowAllPolicy, SessionPolicy
+from acp_python.session.store import SessionStore, default_session_store
+from acp_python.transport.base import Transport
+from acp_python.types import (
     AgentInfo,
     Session,
     HandshakeRequest,
@@ -16,7 +16,7 @@ from .types import (
     KeyPair,
     TextMessage,
 )
-from .utils.crypto import decrypt, encrypt
+from acp_python.utils.crypto import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
