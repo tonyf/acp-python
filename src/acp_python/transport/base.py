@@ -1,35 +1,65 @@
-from typing import Any, AsyncGenerator, Dict, List, Protocol
+from typing import Any, AsyncGenerator, Dict, List, Protocol, Generator
 
-from ..types import (
-    AgentInfo,
+from acp_python.types import (
+    ActorInfo,
     Session,
-    EncryptedMessage,
+    MessageEnvelope,
     HandshakeRequest,
     HandshakeResponse,
 )
 
 
 class Transport(Protocol):
-    agent: AgentInfo
+    actor: ActorInfo
 
-    async def connect(self, info: AgentInfo): ...
+    def connect(self, info: ActorInfo): ...
 
-    async def send(self, to: AgentInfo, message: EncryptedMessage): ...
+    def send(self, to: ActorInfo, message: MessageEnvelope): ...
+
+    def request(self, to: ActorInfo, message: MessageEnvelope) -> MessageEnvelope: ...
+
+    def register_session(self, peer: ActorInfo, session_id: str) -> Dict[str, Any]: ...
+
+    def handshake_request(
+        self, to: ActorInfo, request: HandshakeRequest
+    ) -> HandshakeResponse: ...
+
+    def handshake_reply(self, to: ActorInfo, response: HandshakeResponse): ...
+
+    def handshakes(
+        self, peer: ActorInfo
+    ) -> Generator[HandshakeRequest, None, None]: ...
+
+    def messages(
+        self, me: ActorInfo, sessions: List[Session]
+    ) -> Generator[MessageEnvelope, None, None]: ...
+
+
+class AsyncTransport(Protocol):
+    actor: ActorInfo
+
+    async def connect(self, info: ActorInfo): ...
+
+    async def send(self, to: ActorInfo, message: MessageEnvelope): ...
+
+    async def request(
+        self, to: ActorInfo, message: MessageEnvelope, timeout: int = 10
+    ) -> MessageEnvelope: ...
 
     async def register_session(
-        self, agent: AgentInfo, session_id: str
+        self, peer: ActorInfo, session_id: str
     ) -> Dict[str, Any]: ...
 
     async def handshake_request(
-        self, to: AgentInfo, request: HandshakeRequest
+        self, to: ActorInfo, request: HandshakeRequest
     ) -> HandshakeResponse: ...
 
-    async def handshake_reply(self, to: AgentInfo, response: HandshakeResponse): ...
+    async def handshake_reply(self, to: ActorInfo, response: HandshakeResponse): ...
 
     async def handshakes(
-        self, agent: AgentInfo
+        self, peer: ActorInfo
     ) -> AsyncGenerator[HandshakeRequest, None]: ...
 
     async def messages(
-        self, agent: AgentInfo, sessions: List[Session]
-    ) -> AsyncGenerator[EncryptedMessage, None]: ...
+        self, me: ActorInfo, sessions: List[Session]
+    ) -> AsyncGenerator[MessageEnvelope, None]: ...

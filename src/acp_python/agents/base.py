@@ -3,26 +3,27 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, Union
 
 from acp_python.session.policy import AllowAllPolicy, SessionPolicy
 from acp_python.session.store import SessionStore, default_session_store
-from acp_python.transport.base import Transport
+from acp_python.transport.base import AsyncTransport
 from acp_python.types import (
-    AgentInfo,
-    Session,
+    ActorInfo,
     HandshakeRequest,
     HandshakeResponse,
     KeyPair,
-    TextMessage,
+    Message,
+    Session,
+    Task,
 )
 from acp_python.utils.crypto import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
 
-class Agent(ABC):
-    """Base agent class for secure communication between agents.
+class AsyncActor(ABC):
+    """Base async actor class for secure communication between actors.
 
     Provides core functionality for session management, message encryption/decryption,
     and peer-to-peer communication. Subclasses must implement on_message().
@@ -38,8 +39,8 @@ class Agent(ABC):
         self,
         name: str,
         description: str,
-        transport: Transport,
-        peers: List[AgentInfo] | None = None,
+        transport: AsyncTransport,
+        peers: List[ActorInfo] | None = None,
         session_store: SessionStore = default_session_store,
         session_policy: SessionPolicy = AllowAllPolicy(),
     ):
@@ -68,56 +69,17 @@ class Agent(ABC):
         return self._name
 
     @property
-    def info(self) -> AgentInfo:
-        """Get agent's public information."""
-        return AgentInfo(
+    def info(self) -> ActorInfo:
+        """Get actor's public information."""
+        return ActorInfo(
             name=self._name,
             description=self._description,
         )
 
     @property
-    def peers(self) -> List[AgentInfo]:
+    def peers(self) -> List[ActorInfo]:
         """Get list of known peers."""
         return self._peers
-
-    @property
-    def stream_name(self) -> str:
-        """Get stream name for agent's messages."""
-        return f"acp_agent_messages_{self._name}"
-
-    def consumer_name(self, session_id: str) -> str:
-        """Generate consumer name for a session.
-
-        Args:
-            session_id: Unique session identifier
-
-        Returns:
-            Formatted consumer name
-        """
-        return f"{self._name}_{session_id}"
-
-    def message_key(self, agent_info: AgentInfo, session_id: str = "*") -> str:
-        """Generate message routing key.
-
-        Args:
-            agent_info: Target agent information
-            session_id: Session identifier or wildcard
-
-        Returns:
-            Formatted message key
-        """
-        return f"acp.agent.{agent_info.name}.message.{session_id}"
-
-    def handshake_key(self, agent_info: AgentInfo) -> str:
-        """Generate handshake routing key.
-
-        Args:
-            agent_info: Target agent information
-
-        Returns:
-            Formatted handshake key
-        """
-        return f"acp.agent.{agent_info.name}.handshake"
 
     ##
     ## Message API
@@ -179,57 +141,89 @@ class Agent(ABC):
                     )
                     raise e
 
-    async def register_peer(self, *peers: AgentInfo):
-        """Register one or more peers with this agent.
+    async def register_peer(self, *peers: ActorInfo):
+        """Register one or more peers with this actor.
 
         Args:
             peers: Agent information for peers to register
         """
         self._peers.extend(peers)
 
-    async def send(self, to: AgentInfo, message: TextMessage):
-        """Send an encrypted message to a peer.
-
-        Args:
-            to: Recipient agent information
-            message: Text message to send
+    async def _get_session_for_message(
+        self, to: ActorInfo, message_or_task: Union[Message, Task]
+    ) -> Session:
+        """Helper to retrieve and validate session for a message.
 
         Raises:
-            Exception: If session doesn't exist or send fails
-
-        Flow:
-            1. Retrieves session for the message
-            2. Encrypts message using session keys
-            3. Updates local session with the message
-            4. Sends encrypted message via transport
-            5. Handles errors by restoring previous session state
+            Exception: If session doesn't exist
         """
         session = await self._session_store.get_session(
-            self.info.name, message.session_id
+            self.info.name, message_or_task.session_id
         )
         if session is None:
             raise Exception(
-                f"Session {message.session_id} with {to.name} not found. "
+                f"Session {message_or_task.session_id} with {to.name} not found. "
                 "Make sure to establish a session with the peer first."
             )
+        return session
 
-        # Encrypt the message and send it to the peer
+    async def _prepare_encrypted_message(
+        self, session: Session, message_or_task: Union[Message, Task]
+    ) -> tuple[Session, Message]:
+        """Helper to encrypt message and update session state.
+
+        Returns:
+            Tuple of (updated_session, encrypted_message)
+        """
         encrypted_message = encrypt(
-            message,
+            message_or_task,
             session.my_keypair.private_key.exchange(session.peer_public_key),
         )
-
-        updated_session = session.append(message)
+        updated_session = session.append(message_or_task)
         await self._session_store.set_session(
-            self.info.name, message.session_id, updated_session
+            self.info.name, message_or_task.session_id, updated_session
         )
+        return updated_session, encrypted_message
 
+    async def send(self, to: ActorInfo, message_or_task: Union[Message, Task]):
+        """Send an encrypted message to a peer."""
+        session = await self._get_session_for_message(to, message_or_task)
         try:
+            _, encrypted_message = await self._prepare_encrypted_message(
+                session, message_or_task
+            )
             await self._transport.send(to, encrypted_message)
         except Exception as e:
-            # Restore the session to the previous state if the message send fails
             await self._session_store.set_session(
-                self.info.name, message.session_id, session
+                self.info.name, message_or_task.session_id, session
+            )
+            raise e
+
+    async def request(
+        self, to: ActorInfo, message_or_task: Union[Message, Task]
+    ) -> Session:
+        """Send an encrypted message to a peer and wait for a response."""
+        session = await self._get_session_for_message(to, message_or_task)
+        try:
+            updated_session, encrypted_message = await self._prepare_encrypted_message(
+                session, message_or_task
+            )
+
+            response = await self._transport.request(to, encrypted_message)
+            decrypted_message = decrypt(
+                response,
+                session.my_keypair.private_key.exchange(session.peer_public_key),
+            )
+
+            # Append the response to the session
+            final_session = updated_session.append(decrypted_message)
+            await self._session_store.set_session(
+                self.info.name, decrypted_message.session_id, final_session
+            )
+            return final_session
+        except Exception as e:
+            await self._session_store.set_session(
+                self.info.name, message_or_task.session_id, session
             )
             raise e
 
@@ -296,12 +290,12 @@ class Agent(ABC):
             )
 
     async def establish_session(
-        self, peer: AgentInfo, session_id: str | None = None, metadata: dict = {}
+        self, peer: ActorInfo, session_id: str | None = None, metadata: dict = {}
     ) -> str:
-        """Establish a new session with another agent.
+        """Establish a new session with another actor.
 
         Args:
-            peer: Agent to establish session with
+            peer: Actor to establish session with
             session_id: Optional custom session ID
             metadata: Optional session metadata
 
@@ -377,14 +371,14 @@ class Agent(ABC):
 
     @abstractmethod
     async def on_message(self, session: Session):
-        """Process incoming messages.
+        """Process incoming messages & tasks.
 
         Args:
             session: Updated session containing new message
 
         Note:
-            Subclasses must implement this method to handle messages.
-            The most recent message is available as session.messages[-1].
+            Subclasses must implement this method to handle message and tasks.
+            The most recent message is available as session.history[-1].
         """
         pass
 

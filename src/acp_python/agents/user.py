@@ -5,7 +5,7 @@ import uuid
 from rich.console import Console
 from typer import prompt
 
-from acp_python.agents.base import Agent
+from acp_python.agents.base import AsyncActor
 from acp_python.types import AgentInfo, Session, TextMessage
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-class ConsoleUserAgent(Agent):
+class ConsoleUserAgent(AsyncActor):
     """
     A user interface agent that allows human interaction with other agents.
 
@@ -61,7 +61,7 @@ class ConsoleUserAgent(Agent):
         Args:
             session: The current conversation session.
         """
-        last_message = session.messages[-1]
+        last_message = session.history[-1]
         console.print(f"[{last_message.source}] {last_message.content}")
         response = prompt("> ")
 
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     from typer import Typer
 
     from acp_python.agents.chat import ChatAgent
-    from acp_python.transport.nats import NatsTransport
+    from acp_python.transport.nats import AsyncNatsTransport
 
     app = Typer()
 
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     ):
         async def main():
             # Create agents
-            transport = NatsTransport(server_url=nats_url)
+            transport = AsyncNatsTransport(server_url=nats_url)
             await transport.connect()
             chat = ChatAgent(
                 name="assistant-2",

@@ -10,21 +10,21 @@ from nats.aio.client import Client as NatsClient
 from nats.aio.client import Msg
 from nats.js.client import JetStreamContext
 
-from ..exceptions import SessionNotFound
-from ..types import (
-    AgentInfo,
+from acp_python.types.exceptions import SessionNotFound
+from acp_python.types import (
+    ActorInfo,
     Session,
-    EncryptedMessage,
+    MessageEnvelope,
     HandshakeRequest,
     HandshakeResponse,
 )
 from ..utils.iter import join_iters
-from .base import Transport
+from .base import AsyncTransport
 
 logger = logging.getLogger(__name__)
 
 
-class NatsTransport(Transport):
+class AsyncNatsTransport(AsyncTransport):
     """Transport implementation using NATS messaging system.
 
     Handles communication between agents using NATS JetStream for persistent messaging
@@ -47,25 +47,25 @@ class NatsTransport(Transport):
 
         self._pending_handshakes: Dict[str, Msg] = {}
 
-    def stream_name(self, agent: AgentInfo) -> str:
-        """Generate stream name for an agent.
+    def stream_name(self, actor: ActorInfo) -> str:
+        """Generate stream name for an actor.
 
         Args:
-            agent: Agent information
+            actor: Actor information
 
         Returns:
             Stream name string
 
         Note:
-            Each agent has its own JetStream for message persistence.
+            Each actor has its own JetStream for message persistence.
         """
-        return f"acp_agent_messages_{agent.name}"
+        return f"acp_actor_messages_{actor.name}"
 
-    def consumer_name(self, agent: AgentInfo, session_id: str) -> str:
-        """Generate consumer name for agent session.
+    def consumer_name(self, actor: ActorInfo, session_id: str) -> str:
+        """Generate consumer name for actor session.
 
         Args:
-            agent: Agent information
+            actor: Actor information
             session_id: Session identifier
 
         Returns:
@@ -74,13 +74,13 @@ class NatsTransport(Transport):
         Note:
             Each session has a dedicated consumer to track message delivery.
         """
-        return f"{agent.name}_{session_id}"
+        return f"{actor.name}_{session_id}"
 
-    def message_key(self, agent: AgentInfo, session_id: str = "*") -> str:
+    def message_key(self, actor: ActorInfo, session_id: str = "*") -> str:
         """Generate message subject key.
 
         Args:
-            agent: Agent information
+            actor: Actor information
             session_id: Session identifier, defaults to wildcard
 
         Returns:
@@ -90,13 +90,13 @@ class NatsTransport(Transport):
             Messages flow through NATS subjects using this naming pattern.
             Wildcard (*) allows subscribing to all sessions for an agent.
         """
-        return f"acp.agent.{agent.name}.message.{session_id}"
+        return f"acp.actor.{actor.name}.message.{session_id}"
 
-    def handshake_key(self, agent_info: AgentInfo) -> str:
+    def handshake_key(self, actor: ActorInfo) -> str:
         """Generate handshake subject key.
 
         Args:
-            agent_info: Agent information
+            actor: Actor information
 
         Returns:
             Handshake subject key
@@ -104,12 +104,12 @@ class NatsTransport(Transport):
         Note:
             Handshakes use a separate subject from regular messages.
         """
-        return f"acp.agent.{agent_info.name}.handshake"
+        return f"acp.actor.{actor.name}.handshake"
 
     async def register_session(
-        self, agent: AgentInfo, session_id: str
+        self, peer: ActorInfo, session_id: str
     ) -> Dict[str, Any]:
-        """Register a new session for an agent.
+        """Register a new session for an actor.
 
         Args:
             agent: Agent information
@@ -124,10 +124,10 @@ class NatsTransport(Transport):
             3. Returns configuration for later subscription
         """
         consumer_info = await self._js.add_consumer(
-            stream=self.stream_name(agent),
-            name=agent.name,
-            durable_name=agent.name,
-            filter_subject=self.message_key(agent, session_id),
+            stream=self.stream_name(peer),
+            name=peer.name,
+            durable_name=peer.name,
+            filter_subject=self.message_key(peer, session_id),
             deliver_subject=self._nc.new_inbox(),
             max_ack_pending=1,
             max_waiting=None,
@@ -154,11 +154,11 @@ class NatsTransport(Transport):
         )
         self._js = self._nc.jetstream(timeout=None)
 
-    async def send(self, to: AgentInfo, message: EncryptedMessage):
-        """Send encrypted message to an agent.
+    async def send(self, to: ActorInfo, message: MessageEnvelope):
+        """Send encrypted message to an actor.
 
         Args:
-            to: Recipient agent information
+            to: Recipient actor information
             message: Encrypted message to send
 
         Flow:
@@ -171,13 +171,38 @@ class NatsTransport(Transport):
             message.model_dump_json().encode(),
         )
 
+    async def request(
+        self, to: ActorInfo, message: MessageEnvelope, timeout: int = 10
+    ) -> MessageEnvelope:
+        """Send an encrypted message to a peer and wait for a response.
+
+        Args:
+            to: Recipient actor information
+            message: Encrypted message to send
+
+        Returns:
+            Encrypted response message
+
+        Flow:
+            1. Serializes encrypted message to JSON
+            2. Sends request using NATS request-reply pattern
+            3. Waits for response with 10 second timeout
+            4. Deserializes and returns response
+        """
+        resp = await self._nc.request(
+            self.message_key(to, message.session_id),
+            message.model_dump_json().encode(),
+            timeout=timeout,
+        )
+        return MessageEnvelope.model_validate_json(resp.data.decode())
+
     async def handshake_request(
-        self, to: AgentInfo, request: HandshakeRequest
+        self, to: ActorInfo, request: HandshakeRequest
     ) -> HandshakeResponse:
         """Send handshake request and await response.
 
         Args:
-            to: Target agent information
+            to: Target actor information
             request: Handshake request
 
         Returns:
@@ -196,11 +221,11 @@ class NatsTransport(Transport):
         )
         return HandshakeResponse.model_validate_json(resp.data.decode())
 
-    async def handshake_reply(self, to: AgentInfo, response: HandshakeResponse):
+    async def handshake_reply(self, to: ActorInfo, response: HandshakeResponse):
         """Reply to a pending handshake request.
 
         Args:
-            to: Agent that initiated the handshake
+            to: Actor that initiated the handshake
             response: Handshake response
 
         Raises:
@@ -218,18 +243,18 @@ class NatsTransport(Transport):
         await msg.respond(response.model_dump_json().encode())
 
     async def handshakes(
-        self, agent: AgentInfo
+        self, actor: ActorInfo
     ) -> AsyncGenerator[HandshakeRequest, None]:
         """Listen for incoming handshake requests.
 
         Args:
-            agent: Agent information
+            actor: Actor information
 
         Yields:
             Handshake requests
 
         Flow:
-            1. Subscribes to agent's handshake subject
+            1. Subscribes to actor's handshake subject
             2. For each incoming message:
                a. Deserializes to HandshakeRequest
                b. Stores message for later reply
@@ -238,7 +263,7 @@ class NatsTransport(Transport):
             3. Caller is expected to call handshake_reply() with the response
         """
         handshake_sub = await self._nc.subscribe(
-            self.handshake_key(agent),
+            self.handshake_key(actor),
         )
 
         async for msg in handshake_sub.messages:
@@ -246,7 +271,7 @@ class NatsTransport(Transport):
                 handshake_request = HandshakeRequest.model_validate_json(
                     msg.data.decode()
                 )
-                self._pending_handshakes[handshake_request.from_agent.name] = msg
+                self._pending_handshakes[handshake_request.from_actor.name] = msg
                 yield handshake_request
                 await msg.ack()
             except Exception as e:
@@ -254,40 +279,40 @@ class NatsTransport(Transport):
                 await msg.nak()
 
     async def messages(
-        self, agent: AgentInfo, sessions: List[Session]
-    ) -> AsyncGenerator[EncryptedMessage, None]:
+        self, actor: ActorInfo, sessions: List[Session]
+    ) -> AsyncGenerator[MessageEnvelope, None]:
         """Listen for incoming messages across multiple sessions.
 
         Args:
-            agent: Agent information
+            actor: Actor information
             sessions: List of active sessions
 
         Yields:
-            Encrypted messages
+            Message envelopes
 
         Flow:
-            1. Ensures JetStream exists for agent (creates or updates)
+            1. Ensures JetStream exists for actor (creates or updates)
             2. Creates subscriptions for each session
             3. Merges message streams from all sessions
             4. For each incoming message:
                a. Marks message as in progress
-               b. Deserializes to EncryptedMessage
+               b. Deserializes to MessageEnvelope
                c. Yields message to caller
                d. Acknowledges message after processing
                e. Handles errors with appropriate NATS actions
         """
         try:
             await self._js.add_stream(
-                name=self.stream_name(agent),
-                subjects=[self.message_key(agent, "*")],
+                name=self.stream_name(actor),
+                subjects=[self.message_key(actor, "*")],
             )
         except Exception:
             logger.debug(
-                f"Stream {self.stream_name(agent)} already exists, updating..."
+                f"Stream {self.stream_name(actor)} already exists, updating..."
             )
             await self._js.update_stream(
-                name=self.stream_name(agent),
-                subjects=[self.message_key(agent, "*")],
+                name=self.stream_name(actor),
+                subjects=[self.message_key(actor, "*")],
             )
 
         msg_subs: List[JetStreamContext.PushSubscription] = []
@@ -295,9 +320,9 @@ class NatsTransport(Transport):
         msg_subs = await asyncio.gather(
             *[
                 self._js.subscribe_bind(
-                    stream=self.stream_name(agent),
+                    stream=self.stream_name(actor),
                     config=ConsumerConfig(**session.transport_metadata["config"]),
-                    consumer=self.consumer_name(agent, session.session_id),
+                    consumer=self.consumer_name(actor, session.session_id),
                 )
                 for session in sessions
             ]
@@ -306,7 +331,7 @@ class NatsTransport(Transport):
         async for msg in join_iters(*[sub.messages for sub in msg_subs]):
             try:
                 await msg.in_progress()
-                encrypted_message = EncryptedMessage.model_validate_json(
+                encrypted_message = MessageEnvelope.model_validate_json(
                     msg.data.decode()
                 )
                 yield encrypted_message

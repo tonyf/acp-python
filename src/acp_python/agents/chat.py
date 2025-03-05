@@ -4,11 +4,11 @@ from typing import cast
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
-from acp_python.agents.base import Agent
+from acp_python.agents.base import AsyncActor
 from acp_python.types import AgentInfo, Session, TextMessage
 
 
-class ChatAgent(Agent):
+class ChatAgent(AsyncActor):
     """An agent that uses OpenAI's chat API to generate responses."""
 
     def __init__(
@@ -45,7 +45,7 @@ class ChatAgent(Agent):
         Get the conversation history in openai format
         """
         messages = [{"role": "system", "content": self.system_prompt}]
-        for msg in session.messages:
+        for msg in session.history:
             if msg.source == self._name:
                 role = "assistant"
             else:
