@@ -1,9 +1,8 @@
 import os
-import json
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from acp_python.types.message import registry, Message, MessageEnvelope
+from acp_python.types.message import Message, MessageEnvelope, registry
 
 
 def encrypt(msg: Message, shared_secret: bytes) -> MessageEnvelope:
