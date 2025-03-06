@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Coroutine
-
+from typing import Any, Dict, List, Coroutine, Tuple, Optional
+from functools import partial
 import nats
 import nats.errors
 import nats.js
@@ -97,7 +97,23 @@ class AsyncNatsTransport(AsyncTransport):
             Messages flow through NATS subjects using this naming pattern.
             Wildcard (*) allows subscribing to all sessions for an agent.
         """
-        return f"acp.actor.{actor.identifier}.message.{session_id}"
+        return f"acp.actor.{actor.identifier}.inbox.{session_id}"
+
+    def request_key(self, actor: ActorInfo, session_id: str = "*") -> str:
+        """Generate request-reply subject key.
+
+        Args:
+            actor: Actor information
+            session_id: Session identifier, defaults to wildcard
+
+        Returns:
+            Message subject key
+
+        Note:
+            Messages flow through NATS subjects using this naming pattern.
+            Wildcard (*) allows subscribing to all sessions for an agent.
+        """
+        return f"acp.actor.{actor.identifier}.request.{session_id}"
 
     def handshake_key(self, actor: ActorInfo) -> str:
         """Generate handshake subject key.
@@ -204,27 +220,16 @@ class AsyncNatsTransport(AsyncTransport):
     async def request(
         self, to: ActorInfo, message: MessageEnvelope, timeout: int = 10
     ) -> MessageEnvelope:
-        """Send an encrypted message to a peer and wait for a response.
-
-        Args:
-            to: Recipient actor information
-            message: Encrypted message to send
-
-        Returns:
-            Encrypted response message
-
-        Flow:
-            1. Serializes encrypted message to JSON
-            2. Sends request using NATS request-reply pattern
-            3. Waits for response with 10 second timeout
-            4. Deserializes and returns response
-        """
         logger.debug(f"[{to.identifier}] Sending request: {message.model_dump_json()}")
         resp = await self._nc.request(
-            self.message_key(to, message.session_id),
+            self.request_key(to, message.session_id),
             message.model_dump_json().encode(),
             timeout=timeout,
         )
+        if resp.data == b"+WPI":
+            sub = await self._nc.subscribe(resp.subject)
+            resp = await sub.next_msg(timeout=timeout)
+
         logger.debug(f"[{to.identifier}] Received response: {resp.data.decode()}")
         return MessageEnvelope.model_validate_json(resp.data.decode())
 
@@ -325,39 +330,40 @@ class AsyncNatsTransport(AsyncTransport):
                 logger.error(f"[{actor.identifier}] Error processing handshake: {e}")
                 await msg.nak()
 
-    async def _message_callback(
-        self,
-        msg: Msg,
-        actor: ActorInfo,
-        handler: Coroutine[MessageEnvelope, None, None],
-    ):
-        try:
-            logger.debug(f"[{actor.identifier}] Received message: {msg.subject}")
-            await msg.in_progress()
-            encrypted_message = MessageEnvelope.model_validate_json(msg.data.decode())
-            await handler(encrypted_message)
-            logger.debug(f"[{actor.identifier}] Acknowledging message")
-            await msg.ack()
-        except SessionNotFound as e:
-            logger.debug(f"[{actor.identifier}] Session {e.session_id} not found")
-            await msg.term()
-        except Exception as e:
-            logger.error(f"[{actor.identifier}] Error processing message: {e}")
+    async def _reply_helper(self, response: Optional[MessageEnvelope], *, msg: Msg):
+        logger.debug(
+            f"[{msg.subject}] Responding to message: {response.model_dump_json() if response else 'None'}"
+        )
+        if response is None:
             await msg.nak()
+        else:
+            await msg.respond(response.model_dump_json().encode())
 
     async def _message_callback(
         self,
         msg: Msg,
         actor: ActorInfo,
-        handler: Coroutine[MessageEnvelope, None, None],
+        handler: Coroutine[
+            Tuple[MessageEnvelope, Optional[Coroutine[MessageEnvelope, None, None]]],
+            None,
+            None,
+        ],
+        jetstream: bool = True,
     ):
         try:
             logger.debug(f"[{actor.identifier}] Received message: {msg.subject}")
-            await msg.in_progress()
             encrypted_message = MessageEnvelope.model_validate_json(msg.data.decode())
-            await handler(encrypted_message)
-            logger.debug(f"[{actor.identifier}] Acknowledging message")
-            await msg.ack()
+
+            if jetstream:  # stream
+                await msg.in_progress()
+                await handler(encrypted_message, None)
+                await msg.ack()
+            else:  # req-reply
+                await handler(
+                    encrypted_message,
+                    partial(self._reply_helper, msg=msg),
+                )
+
         except SessionNotFound as e:
             logger.debug(f"[{actor.identifier}] Session {e.session_id} not found")
             await msg.term()
@@ -419,6 +425,16 @@ class AsyncNatsTransport(AsyncTransport):
                 )
                 for session in sessions
             ]
+        )
+
+        await self._nc.subscribe(
+            self.request_key(actor, "*"),
+            cb=partial(
+                self._message_callback,
+                actor=actor,
+                handler=message_handler,
+                jetstream=False,
+            ),
         )
 
         async for msg in join_iters(*[sub.messages for sub in msg_subs]):

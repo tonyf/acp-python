@@ -1,11 +1,11 @@
 import os
-from typing import cast
+from typing import cast, Optional
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from acp_python.agents.base import AsyncActor
-from acp_python.types import ActorInfo, Session, TextMessage
+from acp_python.types import ActorInfo, Session, TextMessage, Message
 
 
 class ChatAgent(AsyncActor):
@@ -63,7 +63,7 @@ class ChatAgent(AsyncActor):
             model=self.model, messages=messages, temperature=self.temperature
         )
 
-    async def on_message(self, session: Session):
+    async def on_message(self, session: Session) -> Optional[Message]:
         # TODO:
         # if you call a tool and create a new conversation,
         # that conversation should have the context of the original conversation
@@ -79,12 +79,11 @@ class ChatAgent(AsyncActor):
             raise Exception("No response from OpenAI")
 
         # Send response to original user
-        sent_message = TextMessage(
+        return TextMessage(
             content=reply_content,
             source=self.info,
             session_id=session.session_id,
         )
-        await self.send(session.original_user, sent_message)
 
 
 if __name__ == "__main__":

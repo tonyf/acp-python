@@ -1,12 +1,12 @@
 import asyncio
 import logging
 import uuid
-
+from typing import Optional
 from rich.console import Console
 from typer import prompt
 
 from acp_python.agents.base import AsyncActor
-from acp_python.types import ActorInfo, Session, TextMessage
+from acp_python.types import ActorInfo, Session, TextMessage, Message
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ConsoleUserAgent(AsyncActor):
         """
         return super().message_key(actor_info, self.session_id)
 
-    async def on_message(self, session: Session):
+    async def on_message(self, session: Session) -> Optional[Message]:
         """
         Handle incoming messages from other agents.
 
@@ -74,13 +74,10 @@ class ConsoleUserAgent(AsyncActor):
             pdb.set_trace()
             response = prompt("> ")
 
-        await self.send(
-            last_message.source,
-            TextMessage(
-                content=response,
-                source=self.info,
-                session_id=session.session_id,
-            ),
+        return TextMessage(
+            content=response,
+            source=self.info,
+            session_id=session.session_id,
         )
 
     async def run(self):

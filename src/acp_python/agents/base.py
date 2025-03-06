@@ -3,7 +3,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Callable, Awaitable, Coroutine
 
 from acp_python.session.policy import AllowAllPolicy, SessionPolicy
 from acp_python.session.store import SessionStore, default_session_store
@@ -168,7 +168,7 @@ class AsyncActor(ABC):
 
     async def _prepare_encrypted_message(
         self, session: Session, message: Message
-    ) -> tuple[Session, Message]:
+    ) -> tuple[Session, MessageEnvelope]:
         """Helper to encrypt message and update session state.
 
         Returns:
@@ -184,7 +184,11 @@ class AsyncActor(ABC):
         )
         return updated_session, encrypted_message
 
-    async def _message_handler(self, envelope: MessageEnvelope):
+    async def _message_handler(
+        self,
+        envelope: MessageEnvelope,
+        reply_fn: Optional[Callable[[MessageEnvelope], Awaitable[None]]],
+    ) -> Optional[Message]:
         """Listen for and process incoming messages across all sessions.
 
         Yields:
@@ -228,7 +232,15 @@ class AsyncActor(ABC):
         )
 
         try:
-            await self.on_message(updated_session)
+            response = await self.on_message(updated_session)
+            if reply_fn is not None:
+                updated_session, response = await self._prepare_encrypted_message(
+                    updated_session, response
+                )
+                await reply_fn(response)
+            elif response is not None:
+                # If we don't have a reply function, send the response async to the message source
+                await self.send(message.source, response)
         except Exception as e:
             # Restore the session to the previous state if the message handler raises an error
             await self._session_store.set_session(
@@ -410,11 +422,15 @@ class AsyncActor(ABC):
     ##
 
     @abstractmethod
-    async def on_message(self, session: Session):
-        """Process incoming messages & tasks.
+    async def on_message(self, session: Session) -> Optional[Message]:
+        """Process incoming asynchronous messages.
 
         Args:
             session: Updated session containing new message
+
+        Returns:
+            Message response to send back to the peer, if any.
+            Note, this callback can choose to send messages manually via send().
 
         Note:
             Subclasses must implement this method to handle message and tasks.
