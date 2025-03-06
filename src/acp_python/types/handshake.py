@@ -19,7 +19,7 @@ class HandshakeRequest(BaseModel):
     """The public key of the actor."""
 
     metadata: Dict[str, str] = {}
-    """Additional metadata about the conversation."""
+    """Additional metadata about the conversation such as auth tokens."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

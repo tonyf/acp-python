@@ -6,7 +6,7 @@ from rich.console import Console
 from typer import prompt
 
 from acp_python.agents.base import AsyncActor
-from acp_python.types import AgentInfo, Session, TextMessage
+from acp_python.types import ActorInfo, Session, TextMessage
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class ConsoleUserAgent(AsyncActor):
         super().__init__(name, **kwargs)
         self.session_id = session_id or str(uuid.uuid4())
 
-    def message_key(self, agent_info: AgentInfo, _: str = "*") -> str:
+    def message_key(self, actor_info: ActorInfo, _: str = "*") -> str:
         """
         Generate a unique key for messages with this agent.
 
@@ -50,7 +50,7 @@ class ConsoleUserAgent(AsyncActor):
         Returns:
             A string key for identifying messages with this agent.
         """
-        return super().message_key(agent_info, self.session_id)
+        return super().message_key(actor_info, self.session_id)
 
     async def on_message(self, session: Session):
         """

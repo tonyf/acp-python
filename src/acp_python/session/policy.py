@@ -1,9 +1,13 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Protocol, Tuple
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Protocol, Tuple
 
 import aiohttp
 
-if TYPE_CHECKING:
-    from acp_python.agent.types import AgentInfo
+from acp_python.types import HandshakeRequest, ActorInfo
+
+
+# TODO: We need a callback that communicates with the server
+# to update the read/write permissions on the session subjects.
 
 
 class SessionPolicy(Protocol):
@@ -21,20 +25,20 @@ class SessionPolicy(Protocol):
             return False, "Only trusted actors allowed"
     """
 
-    async def __call__(self, peer: "AgentInfo") -> Tuple[bool, str]: ...
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]: ...
 
 
 class AllowAllPolicy(SessionPolicy):
     """Policy that allows sessions with all actors."""
 
-    async def __call__(self, peer: "AgentInfo") -> Tuple[bool, str]:
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
         return True, ""
 
 
 class DenyAllPolicy(SessionPolicy):
     """Policy that denies sessions with all actors."""
 
-    async def __call__(self, peer: "AgentInfo") -> Tuple[bool, str]:
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
         return False, "Sessions are not allowed"
 
 
@@ -46,11 +50,11 @@ class WhitelistPolicy(SessionPolicy):
         allowed_actors: List of Actor objects that are allowed to establish sessions.
     """
 
-    def __init__(self, allowed_actors: List["AgentInfo"]):
+    def __init__(self, allowed_actors: List[ActorInfo]):
         self.allowed_actors = allowed_actors
 
-    async def __call__(self, peer: "AgentInfo") -> Tuple[bool, str]:
-        return peer in self.allowed_actors, ""
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
+        return request.from_actor in self.allowed_actors, ""
 
 
 class CloudWhitelistPolicy(SessionPolicy):
@@ -66,13 +70,48 @@ class CloudWhitelistPolicy(SessionPolicy):
         self.api_url = api_url
         self.token = token
 
-    async def fetch_is_allowed(self, peer: "AgentInfo") -> Dict[str, Any]:
+    async def fetch_is_allowed(self, peer: ActorInfo) -> Dict[str, Any]:
         async with aiohttp.ClientSession() as client:
             async with client.get(
-                self.api_url, headers={"Authorization": f"Bearer {self.token}"}
+                f"{self.api_url}?peer={peer.identifier}",
+                headers={"Authorization": f"Bearer {self.token}"},
             ) as response:
                 return await response.json()
 
-    async def __call__(self, peer: "AgentInfo") -> Tuple[bool, str]:
-        resp = await self.fetch_is_allowed(peer)
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
+        resp = await self.fetch_is_allowed(request.from_actor)
         return resp["allowed"], resp["reason"]
+
+
+class JwtSessionPolicy(SessionPolicy, ABC):
+    """
+    Abstract base class for JWT-based session policies.
+
+    Args:
+        jwt_header: Header name for the JWT token.
+    """
+
+    @abstractmethod
+    async def validate_jwt(self, metadata: Dict[str, Any]) -> Tuple[bool, str]: ...
+
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
+        return await self.validate_jwt(request.metadata)
+
+
+class MultiStepSessionPolicy(SessionPolicy):
+    """
+    Policy that applies a list of session policies in order.
+
+    Args:
+        policies: List of SessionPolicy objects to apply.
+    """
+
+    def __init__(self, policies: List[SessionPolicy]):
+        self.policies = policies
+
+    async def __call__(self, request: HandshakeRequest) -> Tuple[bool, str]:
+        for policy in self.policies:
+            allowed, reason = await policy(request)
+            if not allowed:
+                return False, reason
+        return True, ""

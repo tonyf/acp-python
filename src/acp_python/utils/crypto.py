@@ -1,12 +1,12 @@
 import os
-from typing import Union
+import json
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from acp_python.types.message import Message, MessageEnvelope, Task
+from acp_python.types.message import registry, Message, MessageEnvelope
 
 
-def encrypt(msg: Union[Message, Task], shared_secret: bytes) -> MessageEnvelope:
+def encrypt(msg: Message, shared_secret: bytes) -> MessageEnvelope:
     """Encrypt a text message using AES-GCM with the shared secret.
 
     Args:
@@ -26,7 +26,7 @@ def encrypt(msg: Union[Message, Task], shared_secret: bytes) -> MessageEnvelope:
     )
 
 
-def decrypt(msg: MessageEnvelope, shared_secret: bytes) -> Union[Message, Task]:
+def decrypt(msg: MessageEnvelope, shared_secret: bytes) -> Message:
     """Decrypt an encrypted message using AES-GCM with the shared secret.
 
     Args:
@@ -34,14 +34,21 @@ def decrypt(msg: MessageEnvelope, shared_secret: bytes) -> Union[Message, Task]:
         shared_secret: The shared secret key used for decryption
 
     Returns:
-        The decrypted Message
+        The decrypted Message, properly typed based on content_type
+
+    Raises:
+        ValueError: If the message type is not registered
     """
     cipher = AESGCM(shared_secret[:32])
-    content = cipher.decrypt(bytes.fromhex(msg.nonce), bytes.fromhex(msg.content), None)
+    content = cipher.decrypt(
+        bytes.fromhex(msg.nonce), bytes.fromhex(msg.content), None
+    ).decode()
 
-    if msg.type == "message":
-        return Message.model_validate_json(content.decode())
-    elif msg.type == "task":
-        return Task.model_validate_json(content.decode())
-    else:
-        raise ValueError(f"Unknown message type: {msg.type}")
+    # First parse as basic dict to get the content type
+
+    raw_msg = json.loads(content)
+    try:
+        message_class = registry.get(raw_msg["content_type"])
+        return message_class.model_validate_json(content)
+    except KeyError as e:
+        raise ValueError(f"Unknown message type: {raw_msg.get('content_type')}") from e

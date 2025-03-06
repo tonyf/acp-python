@@ -20,6 +20,8 @@ class Transport(Protocol):
 
     def register_session(self, peer: ActorInfo, session_id: str) -> Dict[str, Any]: ...
 
+    def close_session(self, session_id: str): ...
+
     def handshake_request(
         self, to: ActorInfo, request: HandshakeRequest
     ) -> HandshakeResponse: ...
@@ -49,6 +51,8 @@ class AsyncTransport(Protocol):
     async def register_session(
         self, peer: ActorInfo, session_id: str
     ) -> Dict[str, Any]: ...
+
+    async def close_session(self, session_id: str): ...
 
     async def handshake_request(
         self, to: ActorInfo, request: HandshakeRequest

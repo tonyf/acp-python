@@ -1,15 +1,17 @@
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Generic, Literal, TypeVar, Callable
 
 from pydantic import BaseModel
 
 from .actor import ActorInfo
 
+T = TypeVar("T", bound=BaseModel)
 
-class Message(BaseModel):
+
+class Message(BaseModel, Generic[T]):
     source: ActorInfo
     """The actor that sent this message."""
 
-    content: str
+    content: T
     """The content of the message."""
 
     session_id: str
@@ -18,18 +20,75 @@ class Message(BaseModel):
     metadata: Dict[str, Any] = {}
     """Additional metadata"""
 
+    content_type: str
+    """The type identifier for this message."""
 
-class Task(BaseModel):
-    """A task to be executed by an actor."""
 
-    source: ActorInfo
-    """The actor executing this task."""
+class MessageTypeRegistry:
+    """Registry for message types that can be serialized and deserialized."""
 
-    session_id: str
-    """The session ID to which this task belongs."""
+    def __init__(self):
+        self._types: Dict[str, type[Message]] = {}
 
-    payload: Dict[str, Any]
-    """The payload of the task."""
+    def register(self, type_id: str, message_class: type[Message]) -> None:
+        """Register a message type with the given type ID.
+
+        Args:
+            type_id: The unique identifier for this message type
+            message_class: The Message class to register
+        """
+        self._types[type_id] = message_class
+
+    def get(self, type_id: str) -> type[Message]:
+        """Get a message type class by its type ID.
+
+        Args:
+            type_id: The type identifier to look up
+
+        Returns:
+            The corresponding Message class
+
+        Raises:
+            KeyError: If the type_id is not registered
+        """
+        return self._types[type_id]
+
+    def __contains__(self, type_id: str) -> bool:
+        return type_id in self._types
+
+    def message_type(self, type_id: str) -> Callable[[type[Message]], type[Message]]:
+        """Decorator to register a message type.
+
+        Args:
+            type_id: The type identifier for this message type
+
+        Returns:
+            A decorator function that registers the message class
+        """
+
+        def decorator(cls: type[Message]) -> type[Message]:
+            cls.content_type = type_id  # type: ignore
+            self.register(type_id, cls)
+            return cls
+
+        return decorator
+
+
+# Global registry instance
+registry = MessageTypeRegistry()
+
+
+@registry.message_type("text")
+class TextMessage(Message[str]):
+    """A text message."""
+
+
+Status = Literal["pending", "success", "failure"]
+
+
+@registry.message_type("task_status")
+class TaskStatus(Message[Status]):
+    """The status of a task."""
 
 
 class MessageEnvelope(BaseModel):
@@ -43,6 +102,3 @@ class MessageEnvelope(BaseModel):
 
     nonce: str
     """The nonce of the message."""
-
-    type: Literal["message", "task"]
-    """The type of message."""

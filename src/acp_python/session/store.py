@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional, Protocol
 
-from ..types import Session
+from acp_python.types import Session
 
 
 class SessionStore(Protocol):

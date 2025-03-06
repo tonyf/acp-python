@@ -106,13 +106,11 @@ class AsyncNatsTransport(AsyncTransport):
         """
         return f"acp.actor.{actor.name}.handshake"
 
-    async def register_session(
-        self, peer: ActorInfo, session_id: str
-    ) -> Dict[str, Any]:
+    async def register_session(self, me: ActorInfo, session_id: str) -> Dict[str, Any]:
         """Register a new session for an actor.
 
         Args:
-            agent: Agent information
+            me: Actor information
             session_id: Session identifier
 
         Returns:
@@ -124,15 +122,27 @@ class AsyncNatsTransport(AsyncTransport):
             3. Returns configuration for later subscription
         """
         consumer_info = await self._js.add_consumer(
-            stream=self.stream_name(peer),
-            name=peer.name,
-            durable_name=peer.name,
-            filter_subject=self.message_key(peer, session_id),
+            stream=self.stream_name(me),
+            name=me.name,
+            durable_name=me.name,
+            filter_subject=self.message_key(me, session_id),
             deliver_subject=self._nc.new_inbox(),
             max_ack_pending=1,
             max_waiting=None,
         )
         return consumer_info.as_dict()
+
+    async def close_session(self, me: ActorInfo, session_id: str):
+        """Close a session for an actor.
+
+        Args:
+            actor: Actor information
+            session_id: Session identifier
+        """
+        await self._js.delete_consumer(
+            stream=self.stream_name(me),
+            consumer=self.consumer_name(me, session_id),
+        )
 
     async def connect(self):
         """Connect to NATS server.

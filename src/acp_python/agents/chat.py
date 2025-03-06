@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from acp_python.agents.base import AsyncActor
-from acp_python.types import AgentInfo, Session, TextMessage
+from acp_python.types import ActorInfo, Session, TextMessage
 
 
 class ChatAgent(AsyncActor):
@@ -29,7 +29,7 @@ class ChatAgent(AsyncActor):
         self.temperature = temperature
 
     async def delegate_to_agent(
-        self, target_agent: AgentInfo, content: str, session: Session
+        self, target_actor: ActorInfo, content: str, session: Session
     ) -> str:
         """
         Delegate a task to another agent.

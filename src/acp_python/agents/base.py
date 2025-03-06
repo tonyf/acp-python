@@ -3,7 +3,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import AsyncGenerator, List, Union
+from typing import AsyncGenerator, List
 
 from acp_python.session.policy import AllowAllPolicy, SessionPolicy
 from acp_python.session.store import SessionStore, default_session_store
@@ -15,7 +15,6 @@ from acp_python.types import (
     KeyPair,
     Message,
     Session,
-    Task,
 )
 from acp_python.utils.crypto import decrypt, encrypt
 
@@ -116,8 +115,7 @@ class AsyncActor(ABC):
                     self.info.name, encrypted_message.session_id
                 )
                 if session is None:
-                    logger.debug(f"Session {encrypted_message.session_id} not found")
-                    # raise SessionNotFound(encrypted_message.session_id)
+                    # TODO: tell transport to reject the message
                     continue
 
                 # Decrypt the message
@@ -150,7 +148,7 @@ class AsyncActor(ABC):
         self._peers.extend(peers)
 
     async def _get_session_for_message(
-        self, to: ActorInfo, message_or_task: Union[Message, Task]
+        self, to: ActorInfo, message: Message
     ) -> Session:
         """Helper to retrieve and validate session for a message.
 
@@ -158,17 +156,17 @@ class AsyncActor(ABC):
             Exception: If session doesn't exist
         """
         session = await self._session_store.get_session(
-            self.info.name, message_or_task.session_id
+            self.info.name, message.session_id
         )
         if session is None:
             raise Exception(
-                f"Session {message_or_task.session_id} with {to.name} not found. "
+                f"Session {message.session_id} with {to.name} not found. "
                 "Make sure to establish a session with the peer first."
             )
         return session
 
     async def _prepare_encrypted_message(
-        self, session: Session, message_or_task: Union[Message, Task]
+        self, session: Session, message: Message
     ) -> tuple[Session, Message]:
         """Helper to encrypt message and update session state.
 
@@ -176,37 +174,35 @@ class AsyncActor(ABC):
             Tuple of (updated_session, encrypted_message)
         """
         encrypted_message = encrypt(
-            message_or_task,
+            message,
             session.my_keypair.private_key.exchange(session.peer_public_key),
         )
-        updated_session = session.append(message_or_task)
+        updated_session = session.append(message)
         await self._session_store.set_session(
-            self.info.name, message_or_task.session_id, updated_session
+            self.info.name, message.session_id, updated_session
         )
         return updated_session, encrypted_message
 
-    async def send(self, to: ActorInfo, message_or_task: Union[Message, Task]):
+    async def send(self, to: ActorInfo, message: Message):
         """Send an encrypted message to a peer."""
-        session = await self._get_session_for_message(to, message_or_task)
+        session = await self._get_session_for_message(to, message)
         try:
             _, encrypted_message = await self._prepare_encrypted_message(
-                session, message_or_task
+                session, message
             )
             await self._transport.send(to, encrypted_message)
         except Exception as e:
             await self._session_store.set_session(
-                self.info.name, message_or_task.session_id, session
+                self.info.name, message.session_id, session
             )
             raise e
 
-    async def request(
-        self, to: ActorInfo, message_or_task: Union[Message, Task]
-    ) -> Session:
+    async def request(self, to: ActorInfo, message: Message) -> Session:
         """Send an encrypted message to a peer and wait for a response."""
-        session = await self._get_session_for_message(to, message_or_task)
+        session = await self._get_session_for_message(to, message)
         try:
             updated_session, encrypted_message = await self._prepare_encrypted_message(
-                session, message_or_task
+                session, message
             )
 
             response = await self._transport.request(to, encrypted_message)
@@ -223,7 +219,7 @@ class AsyncActor(ABC):
             return final_session
         except Exception as e:
             await self._session_store.set_session(
-                self.info.name, message_or_task.session_id, session
+                self.info.name, message.session_id, session
             )
             raise e
 
@@ -244,7 +240,7 @@ class AsyncActor(ABC):
             4. Stores session in session store
             5. Sends handshake response to peer
         """
-        should_accept, reason = await self._session_policy(request.from_agent)
+        should_accept, reason = await self._session_policy(request)
         if should_accept:
             # Create a new session
             keypair = KeyPair.generate()

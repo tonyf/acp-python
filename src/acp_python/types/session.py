@@ -3,10 +3,10 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
 from .actor import ActorInfo
-from .message import Message, Task
+from .message import Message
 from .keypair import KeyPair
 
 
@@ -34,8 +34,8 @@ class Session(BaseModel):
     participants: List[ActorInfo] = []
     """All actors participating in this conversation."""
 
-    history: List[Union[Message, Task]] = []
-    """All messages and tasks in the conversation."""
+    history: List[Message] = []
+    """All messages in the conversation."""
 
     metadata: Dict[str, str] = {}
     """Additional session metadata and context."""
