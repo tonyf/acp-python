@@ -20,7 +20,7 @@ def agent_to_tool(agent: AgentInfo) -> Dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": agent.name.lower(),
+            "name": agent.identifier.lower(),
             "description": agent.description,
             "parameters": {
                 "type": "object",

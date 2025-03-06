@@ -1,4 +1,13 @@
-from typing import Any, AsyncGenerator, Dict, List, Protocol, Generator
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Protocol,
+    Generator,
+    Callable,
+    Coroutine,
+)
 
 from acp_python.types import (
     ActorInfo,
@@ -12,7 +21,13 @@ from acp_python.types import (
 class Transport(Protocol):
     actor: ActorInfo
 
+    def __aenter__(self): ...
+
+    def __aexit__(self, exc_type, exc_value, traceback): ...
+
     def connect(self, info: ActorInfo): ...
+
+    def close(self): ...
 
     def send(self, to: ActorInfo, message: MessageEnvelope): ...
 
@@ -33,14 +48,20 @@ class Transport(Protocol):
     ) -> Generator[HandshakeRequest, None, None]: ...
 
     def messages(
-        self, me: ActorInfo, sessions: List[Session]
-    ) -> Generator[MessageEnvelope, None, None]: ...
+        self, me: ActorInfo, sessions: List[Session], message_handler: Callable
+    ): ...
 
 
 class AsyncTransport(Protocol):
     actor: ActorInfo
 
+    async def __aenter__(self): ...
+
+    async def __aexit__(self, exc_type, exc_value, traceback): ...
+
     async def connect(self, info: ActorInfo): ...
+
+    async def close(self): ...
 
     async def send(self, to: ActorInfo, message: MessageEnvelope): ...
 
@@ -61,9 +82,14 @@ class AsyncTransport(Protocol):
     async def handshake_reply(self, to: ActorInfo, response: HandshakeResponse): ...
 
     async def handshakes(
-        self, peer: ActorInfo
-    ) -> AsyncGenerator[HandshakeRequest, None]: ...
+        self,
+        peer: ActorInfo,
+        handshake_handler: Coroutine[HandshakeRequest, None, None],
+    ) -> None: ...
 
     async def messages(
-        self, me: ActorInfo, sessions: List[Session]
-    ) -> AsyncGenerator[MessageEnvelope, None]: ...
+        self,
+        me: ActorInfo,
+        sessions: List[Session],
+        message_handler: Coroutine[MessageEnvelope, None, None],
+    ) -> None: ...

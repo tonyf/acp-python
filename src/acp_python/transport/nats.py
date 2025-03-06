@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, Dict, List, Coroutine
 
 import nats
 import nats.errors
@@ -10,7 +10,7 @@ from nats.aio.client import Client as NatsClient
 from nats.aio.client import Msg
 from nats.js.client import JetStreamContext
 
-from acp_python.types.exceptions import SessionNotFound
+from acp_python.types.exceptions import SessionNotFound, SessionsUpdated
 from acp_python.types import (
     ActorInfo,
     Session,
@@ -47,6 +47,13 @@ class AsyncNatsTransport(AsyncTransport):
 
         self._pending_handshakes: Dict[str, Msg] = {}
 
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+
     def stream_name(self, actor: ActorInfo) -> str:
         """Generate stream name for an actor.
 
@@ -59,7 +66,7 @@ class AsyncNatsTransport(AsyncTransport):
         Note:
             Each actor has its own JetStream for message persistence.
         """
-        return f"acp_actor_messages_{actor.name}"
+        return f"acp_actor_messages_{actor.identifier}"
 
     def consumer_name(self, actor: ActorInfo, session_id: str) -> str:
         """Generate consumer name for actor session.
@@ -74,7 +81,7 @@ class AsyncNatsTransport(AsyncTransport):
         Note:
             Each session has a dedicated consumer to track message delivery.
         """
-        return f"{actor.name}_{session_id}"
+        return f"{actor.identifier}_{session_id}"
 
     def message_key(self, actor: ActorInfo, session_id: str = "*") -> str:
         """Generate message subject key.
@@ -90,7 +97,7 @@ class AsyncNatsTransport(AsyncTransport):
             Messages flow through NATS subjects using this naming pattern.
             Wildcard (*) allows subscribing to all sessions for an agent.
         """
-        return f"acp.actor.{actor.name}.message.{session_id}"
+        return f"acp.actor.{actor.identifier}.message.{session_id}"
 
     def handshake_key(self, actor: ActorInfo) -> str:
         """Generate handshake subject key.
@@ -104,7 +111,7 @@ class AsyncNatsTransport(AsyncTransport):
         Note:
             Handshakes use a separate subject from regular messages.
         """
-        return f"acp.actor.{actor.name}.handshake"
+        return f"acp.actor.{actor.identifier}.handshake"
 
     async def register_session(self, me: ActorInfo, session_id: str) -> Dict[str, Any]:
         """Register a new session for an actor.
@@ -123,8 +130,8 @@ class AsyncNatsTransport(AsyncTransport):
         """
         consumer_info = await self._js.add_consumer(
             stream=self.stream_name(me),
-            name=me.name,
-            durable_name=me.name,
+            name=me.identifier,
+            durable_name=me.identifier,
             filter_subject=self.message_key(me, session_id),
             deliver_subject=self._nc.new_inbox(),
             max_ack_pending=1,
@@ -164,6 +171,17 @@ class AsyncNatsTransport(AsyncTransport):
         )
         self._js = self._nc.jetstream(timeout=None)
 
+    async def close(self):
+        """Close NATS connection.
+
+        Flow:
+            Closes JetStream context
+            Closes NATS connection
+        """
+        await self._nc.close()
+        self._nc = None
+        self._js = None
+
     async def send(self, to: ActorInfo, message: MessageEnvelope):
         """Send encrypted message to an actor.
 
@@ -176,10 +194,12 @@ class AsyncNatsTransport(AsyncTransport):
             2. Publishes to recipient's message subject with session_id
             3. Message is stored in JetStream for persistence
         """
+        logger.debug(f"[{to.identifier}] Sending message: {message.model_dump_json()}")
         await self._js.publish(
             self.message_key(to, message.session_id),
             message.model_dump_json().encode(),
         )
+        logger.debug(f"[{to.identifier}] Message sent to {to.identifier}")
 
     async def request(
         self, to: ActorInfo, message: MessageEnvelope, timeout: int = 10
@@ -199,11 +219,13 @@ class AsyncNatsTransport(AsyncTransport):
             3. Waits for response with 10 second timeout
             4. Deserializes and returns response
         """
+        logger.debug(f"[{to.identifier}] Sending request: {message.model_dump_json()}")
         resp = await self._nc.request(
             self.message_key(to, message.session_id),
             message.model_dump_json().encode(),
             timeout=timeout,
         )
+        logger.debug(f"[{to.identifier}] Received response: {resp.data.decode()}")
         return MessageEnvelope.model_validate_json(resp.data.decode())
 
     async def handshake_request(
@@ -224,10 +246,16 @@ class AsyncNatsTransport(AsyncTransport):
             3. Waits for response with 10 second timeout
             4. Deserializes and returns response
         """
+        logger.debug(
+            f"[{request.from_actor.identifier}] Sending handshake request to {to.identifier}"
+        )
         resp = await self._nc.request(
             self.handshake_key(to),
             request.model_dump_json().encode(),
             timeout=10,
+        )
+        logger.debug(
+            f"[{request.from_actor.identifier}] Received handshake response from {to.identifier}: {resp.data.decode()}"
         )
         return HandshakeResponse.model_validate_json(resp.data.decode())
 
@@ -246,15 +274,20 @@ class AsyncNatsTransport(AsyncTransport):
             2. Serializes response to JSON
             3. Sends response directly to the request's reply subject
         """
-        msg = self._pending_handshakes.pop(to.name)
+        msg = self._pending_handshakes.pop(to.identifier)
         if msg is None:
-            raise Exception(f"No pending handshake for {to.name}")
+            raise Exception(f"[{to.identifier}] No pending handshake")
 
+        logger.debug(
+            f"Responding to handshake request with {response.model_dump_json()}"
+        )
         await msg.respond(response.model_dump_json().encode())
 
     async def handshakes(
-        self, actor: ActorInfo
-    ) -> AsyncGenerator[HandshakeRequest, None]:
+        self,
+        actor: ActorInfo,
+        handshake_handler: Coroutine[HandshakeRequest, None, None],
+    ):
         """Listen for incoming handshake requests.
 
         Args:
@@ -281,16 +314,67 @@ class AsyncNatsTransport(AsyncTransport):
                 handshake_request = HandshakeRequest.model_validate_json(
                     msg.data.decode()
                 )
-                self._pending_handshakes[handshake_request.from_actor.name] = msg
-                yield handshake_request
+                logger.debug(
+                    f"[{actor.identifier}] Received handshake request from {handshake_request.from_actor.identifier}"
+                )
+                self._pending_handshakes[handshake_request.from_actor.identifier] = msg
+                await handshake_handler(handshake_request)
+                logger.debug(f"[{actor.identifier}] Acknowledging handshake request")
                 await msg.ack()
             except Exception as e:
-                logger.error(f"Error processing handshake: {e}")
+                logger.error(f"[{actor.identifier}] Error processing handshake: {e}")
                 await msg.nak()
 
+    async def _message_callback(
+        self,
+        msg: Msg,
+        actor: ActorInfo,
+        handler: Coroutine[MessageEnvelope, None, None],
+    ):
+        try:
+            logger.debug(f"[{actor.identifier}] Received message: {msg.subject}")
+            await msg.in_progress()
+            encrypted_message = MessageEnvelope.model_validate_json(msg.data.decode())
+            await handler(encrypted_message)
+            logger.debug(f"[{actor.identifier}] Acknowledging message")
+            await msg.ack()
+        except SessionNotFound as e:
+            logger.debug(f"[{actor.identifier}] Session {e.session_id} not found")
+            await msg.term()
+        except Exception as e:
+            logger.error(f"[{actor.identifier}] Error processing message: {e}")
+            await msg.nak()
+
+    async def _message_callback(
+        self,
+        msg: Msg,
+        actor: ActorInfo,
+        handler: Coroutine[MessageEnvelope, None, None],
+    ):
+        try:
+            logger.debug(f"[{actor.identifier}] Received message: {msg.subject}")
+            await msg.in_progress()
+            encrypted_message = MessageEnvelope.model_validate_json(msg.data.decode())
+            await handler(encrypted_message)
+            logger.debug(f"[{actor.identifier}] Acknowledging message")
+            await msg.ack()
+        except SessionNotFound as e:
+            logger.debug(f"[{actor.identifier}] Session {e.session_id} not found")
+            await msg.term()
+        except SessionsUpdated:
+            await self._message_callback(msg, actor, handler)
+            logger.debug(f"[{actor.identifier}] Sessions updated, reconnecting")
+            raise
+        except Exception as e:
+            logger.error(f"[{actor.identifier}] Error processing message: {e}")
+            await msg.nak()
+
     async def messages(
-        self, actor: ActorInfo, sessions: List[Session]
-    ) -> AsyncGenerator[MessageEnvelope, None]:
+        self,
+        actor: ActorInfo,
+        sessions: List[Session],
+        message_handler: Coroutine[MessageEnvelope, None, None],
+    ):
         """Listen for incoming messages across multiple sessions.
 
         Args:
@@ -326,7 +410,6 @@ class AsyncNatsTransport(AsyncTransport):
             )
 
         msg_subs: List[JetStreamContext.PushSubscription] = []
-
         msg_subs = await asyncio.gather(
             *[
                 self._js.subscribe_bind(
@@ -339,16 +422,4 @@ class AsyncNatsTransport(AsyncTransport):
         )
 
         async for msg in join_iters(*[sub.messages for sub in msg_subs]):
-            try:
-                await msg.in_progress()
-                encrypted_message = MessageEnvelope.model_validate_json(
-                    msg.data.decode()
-                )
-                yield encrypted_message
-                await msg.ack()
-            except SessionNotFound as e:
-                logger.warning(f"Session {e.session_id} not found")
-                await msg.term()
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                await msg.nak()
+            await self._message_callback(msg, actor, message_handler)

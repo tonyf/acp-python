@@ -24,7 +24,7 @@ class ConsoleUserAgent(AsyncActor):
 
     def __init__(
         self,
-        name: str = "user",
+        identifier: str = "user",
         session_id: str | None = None,
         **kwargs,
     ):
@@ -32,11 +32,11 @@ class ConsoleUserAgent(AsyncActor):
         Initialize the UserInterface agent.
 
         Args:
-            name: The name of the user agent.
+            identifier: The identifier of the user agent.
             session_id: Optional session ID. If not provided, a random UUID will be generated.
             **kwargs: Additional arguments to pass to the parent Agent class.
         """
-        super().__init__(name, **kwargs)
+        super().__init__(identifier, **kwargs)
         self.session_id = session_id or str(uuid.uuid4())
 
     def message_key(self, actor_info: ActorInfo, _: str = "*") -> str:
@@ -131,11 +131,36 @@ class ConsoleUserAgent(AsyncActor):
 
 if __name__ == "__main__":
     from typer import Typer
-
-    from acp_python.agents.chat import ChatAgent
+    import logging
+    import os
     from acp_python.transport.nats import AsyncNatsTransport
 
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=getattr(logging, log_level))
+
     app = Typer()
+
+    @app.command()
+    def run(
+        nats_url: str = "nats://local:3GNtWSMhUvdxjp1OLJfmpa67qZyICWSf@0.0.0.0:4222",
+        session_id: str | None = None,
+    ):
+        async def main():
+            # Create agents
+            async with AsyncNatsTransport(server_url=nats_url) as transport:
+                user = ConsoleUserAgent(
+                    identifier="tony-2",
+                    session_id=session_id,
+                    description="A user interface for the chat agent.",
+                    transport=transport,
+                )
+
+                await user.register_peer(
+                    ActorInfo(identifier="assistant-2", description="A chat agent.")
+                )
+                await user.run()
+
+        asyncio.run(main())
 
     @app.command()
     def chat(
@@ -145,41 +170,27 @@ if __name__ == "__main__":
         nats_url: str = "nats://local:3GNtWSMhUvdxjp1OLJfmpa67qZyICWSf@0.0.0.0:4222",
         session_id: str | None = None,
     ):
+        from acp_python.agents.chat import ChatAgent
+
         async def main():
             # Create agents
-            transport = AsyncNatsTransport(server_url=nats_url)
-            await transport.connect()
-            chat = ChatAgent(
-                name="assistant-2",
-                model=model,
-                description="A helpful assistant that can answer questions and help with tasks.",
-                openai_kwargs={"api_key": api_key, "base_url": base_url},
-                transport=transport,
-            )
-            # pirate = ChatAgent(
-            #     name="pirate-riddler-2",
-            #     model=model,
-            #     description="A pirate that creates riddles",
-            #     openai_kwargs={"api_key": api_key, "base_url": base_url},
-            #     transport=transport,
-            # )
-            user = ConsoleUserAgent(
-                name="tony-2",
-                session_id=session_id,
-                description="A user interface for the chat agent.",
-                transport=transport,
-            )
+            async with AsyncNatsTransport(server_url=nats_url) as transport:
+                chat = ChatAgent(
+                    identifier="assistant-2",
+                    model=model,
+                    description="A helpful assistant that can answer questions and help with tasks.",
+                    openai_kwargs={"api_key": api_key, "base_url": base_url},
+                    transport=transport,
+                )
+                user = ConsoleUserAgent(
+                    identifier="tony-2",
+                    session_id=session_id,
+                    description="A user interface for the chat agent.",
+                    transport=transport,
+                )
 
-            # await chat.register_peer(pirate.info)
-            # await pirate.register_peer(chat.info)
-            await user.register_peer(chat.info)
-
-            # Run all agents concurrently in the background
-            await asyncio.gather(
-                chat.run(),
-                # pirate.run(),
-                user.run(),
-            )
+                await user.register_peer(chat.info)
+                await asyncio.gather(chat.run(), user.run())
 
         asyncio.run(main())
 

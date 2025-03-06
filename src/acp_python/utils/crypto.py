@@ -23,6 +23,7 @@ def encrypt(msg: Message, shared_secret: bytes) -> MessageEnvelope:
         session_id=msg.session_id,
         content=content.hex(),
         nonce=nonce.hex(),
+        content_type=registry.get_content_type(msg),
     )
 
 
@@ -44,11 +45,8 @@ def decrypt(msg: MessageEnvelope, shared_secret: bytes) -> Message:
         bytes.fromhex(msg.nonce), bytes.fromhex(msg.content), None
     ).decode()
 
-    # First parse as basic dict to get the content type
-
-    raw_msg = json.loads(content)
     try:
-        message_class = registry.get(raw_msg["content_type"])
+        message_class = registry.get(msg.content_type)
         return message_class.model_validate_json(content)
     except KeyError as e:
-        raise ValueError(f"Unknown message type: {raw_msg.get('content_type')}") from e
+        raise ValueError(f"Unknown message type: {msg.content_type}") from e

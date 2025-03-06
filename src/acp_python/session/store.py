@@ -66,7 +66,9 @@ class InMemorySessionStore(SessionStore):
 
     async def active_sessions(self, actor_id: str) -> List[Session]:
         all_sessions = list(self._sessions.values())
-        return [session for session in all_sessions if session.me.name == actor_id]
+        return [
+            session for session in all_sessions if session.me.identifier == actor_id
+        ]
 
     async def get_session(self, actor_id: str, session_id: str) -> Optional[Session]:
         return self._sessions.get(self.session_key(actor_id, session_id))

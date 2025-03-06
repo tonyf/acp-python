@@ -20,9 +20,6 @@ class Message(BaseModel, Generic[T]):
     metadata: Dict[str, Any] = {}
     """Additional metadata"""
 
-    content_type: str
-    """The type identifier for this message."""
-
 
 class MessageTypeRegistry:
     """Registry for message types that can be serialized and deserialized."""
@@ -73,6 +70,13 @@ class MessageTypeRegistry:
 
         return decorator
 
+    def get_content_type(self, message: Message) -> str:
+        """Lookup the content type of a message from the registry."""
+        for type_id, message_class in self._types.items():
+            if isinstance(message, message_class):
+                return type_id
+        raise ValueError(f"Message type {type(message)} not registered")
+
 
 # Global registry instance
 registry = MessageTypeRegistry()
@@ -102,3 +106,6 @@ class MessageEnvelope(BaseModel):
 
     nonce: str
     """The nonce of the message."""
+
+    content_type: str
+    """The type identifier for this message."""
