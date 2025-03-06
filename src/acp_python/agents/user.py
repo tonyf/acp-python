@@ -96,7 +96,7 @@ class ConsoleUserAgent(AsyncActor):
         peer = self._peers[0]
 
         # Start the base agent's message processing
-        agent_task = asyncio.create_task(super().run())
+        loop = asyncio.create_task(super().run())
 
         try:
             # Establish session and send initial message
@@ -119,12 +119,12 @@ class ConsoleUserAgent(AsyncActor):
             )
 
             # Wait for the agent to complete
-            await agent_task
+            await loop
 
         finally:
-            agent_task.cancel()
+            loop.cancel()
             try:
-                await agent_task
+                await loop
             except asyncio.CancelledError:
                 pass
 
