@@ -5,7 +5,7 @@ from typing import Optional
 from rich.console import Console
 from typer import prompt
 
-from acp_python.agents.base import AsyncActor
+from acp_python.agents.base import BaseAsyncAgent
 from acp_python.types import ActorInfo, Session, TextMessage, Message
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-class ConsoleUserAgent(AsyncActor):
+class ConsoleUserAgent(BaseAsyncAgent):
     """
     A user interface agent that allows human interaction with other agents.
 

@@ -4,11 +4,11 @@ from typing import cast, Optional
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
-from acp_python.agents.base import AsyncActor
+from acp_python.agents.base import BaseAsyncAgent
 from acp_python.types import ActorInfo, Session, TextMessage, Message
 
 
-class ChatAgent(AsyncActor):
+class ChatAgent(BaseAsyncAgent):
     """An agent that uses OpenAI's chat API to generate responses."""
 
     def __init__(
