@@ -241,6 +241,12 @@ class AsyncActor(ABC):
             elif response is not None:
                 # If we don't have a reply function, send the response async to the message source
                 await self.send(message.source, response)
+
+            # If the last message is final, delete the session
+            if updated_session.history[-1].is_final:
+                await self._session_store.delete_session(
+                    self.info.identifier, message.session_id
+                )
         except Exception as e:
             # Restore the session to the previous state if the message handler raises an error
             await self._session_store.set_session(

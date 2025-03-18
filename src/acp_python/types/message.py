@@ -17,6 +17,9 @@ class Message(BaseModel, Generic[T]):
     session_id: str
     """The session ID of the message."""
 
+    is_final: bool = False
+    """Whether this message is the final message in the session."""
+
     metadata: Dict[str, Any] = {}
     """Additional metadata"""
 
